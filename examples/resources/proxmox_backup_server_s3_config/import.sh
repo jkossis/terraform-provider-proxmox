@@ -1,0 +1,1 @@
+terraform import proxmox_backup_server_s3_config.example backup-s3
