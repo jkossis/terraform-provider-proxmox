@@ -106,6 +106,7 @@ func (p *ProxmoxBackupServerProvider) DataSources(ctx context.Context) []func() 
 	return []func() datasource.DataSource{
 		NewACLDataSource,
 		NewDatastoreDataSource,
+		NewFingerprintDataSource,
 		NewS3ConfigDataSource,
 		NewUserDataSource,
 		NewUserTokenDataSource,

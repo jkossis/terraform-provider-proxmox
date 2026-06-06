@@ -133,9 +133,16 @@ func (r *DatastoreResource) Create(ctx context.Context, req resource.CreateReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.client.post(ctx, "/config/datastore", datastorePayload(data), nil); err != nil {
+	var upid string
+	if err := r.client.post(ctx, "/config/datastore", datastorePayload(data), &upid); err != nil {
 		resp.Diagnostics.AddError("Create Datastore Failed", err.Error())
 		return
+	}
+	if upid != "" {
+		if err := r.client.waitTask(ctx, upid); err != nil {
+			resp.Diagnostics.AddError("Create Datastore Failed", err.Error())
+			return
+		}
 	}
 	if err := r.readDatastore(ctx, &data); err != nil {
 		resp.Diagnostics.AddError("Read Datastore Failed", err.Error())

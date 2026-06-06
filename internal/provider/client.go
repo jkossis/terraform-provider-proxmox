@@ -6,10 +6,12 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -37,6 +39,15 @@ type proxmoxBackupServerTicketResponse struct {
 	CSRFPreventionToken string `json:"CSRFPreventionToken"`
 }
 
+type proxmoxBackupServerTaskStatus struct {
+	Status     string `json:"status"`
+	ExitStatus string `json:"exitstatus"`
+}
+
+type proxmoxBackupServerTaskLogLine struct {
+	Line string `json:"t"`
+}
+
 type proxmoxBackupServerAPIError struct {
 	method string
 	path   string
@@ -45,12 +56,21 @@ type proxmoxBackupServerAPIError struct {
 	body   string
 }
 
+const (
+	proxmoxBackupServerTaskWaitTimeout  = 10 * time.Minute
+	proxmoxBackupServerTaskWaitInterval = 2 * time.Second
+)
+
 func (e *proxmoxBackupServerAPIError) Error() string {
 	return fmt.Sprintf("%s %s failed with %s: %s", e.method, e.path, e.status, e.body)
 }
 
 func (e *proxmoxBackupServerAPIError) notFound() bool {
-	return e.code == http.StatusNotFound
+	if e.code == http.StatusNotFound {
+		return true
+	}
+
+	return e.code == http.StatusBadRequest && strings.Contains(strings.ToLower(e.body), "no such ")
 }
 
 func newProxmoxBackupServerClient(endpoint, username, password string, insecureTLS bool) (*proxmoxBackupServerClient, error) {
@@ -145,6 +165,134 @@ func (c *proxmoxBackupServerClient) put(ctx context.Context, path string, body a
 
 func (c *proxmoxBackupServerClient) delete(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodDelete, path, nil, nil)
+}
+
+func (c *proxmoxBackupServerClient) certificateFingerprint(ctx context.Context) (string, error) {
+	parsed, err := url.Parse(c.endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	if parsed.Scheme != "https" {
+		return "", fmt.Errorf("endpoint must use https to read certificate fingerprint")
+	}
+
+	address := parsed.Host
+	if parsed.Port() == "" {
+		address = net.JoinHostPort(parsed.Hostname(), "443")
+	}
+
+	dialer := tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: 30 * time.Second},
+		Config: &tls.Config{
+			ServerName:         parsed.Hostname(),
+			InsecureSkipVerify: true, //nolint:gosec // The fingerprint data source intentionally reads untrusted self-signed certificates.
+		},
+	}
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return "", fmt.Errorf("connect to endpoint: %w", err)
+	}
+	defer conn.Close()
+
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		return "", fmt.Errorf("unexpected connection type %T", conn)
+	}
+	certificates := tlsConn.ConnectionState().PeerCertificates
+	if len(certificates) == 0 {
+		return "", fmt.Errorf("endpoint did not present a certificate")
+	}
+
+	return sha256Fingerprint(certificates[0].Raw), nil
+}
+
+func (c *proxmoxBackupServerClient) waitTask(ctx context.Context, upid string) error {
+	return c.waitTaskWithInterval(ctx, upid, proxmoxBackupServerTaskWaitTimeout, proxmoxBackupServerTaskWaitInterval)
+}
+
+func (c *proxmoxBackupServerClient) waitTaskWithInterval(ctx context.Context, upid string, timeout, interval time.Duration) error {
+	node, err := taskNode(upid)
+	if err != nil {
+		return err
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		var status proxmoxBackupServerTaskStatus
+		if err := c.get(ctx, "/nodes/"+urlPathEscape(node)+"/tasks/"+urlPathEscape(upid)+"/status", &status); err != nil {
+			return fmt.Errorf("read task status: %w", err)
+		}
+
+		if status.Status == "stopped" {
+			if status.ExitStatus == "OK" {
+				return nil
+			}
+			return c.taskError(ctx, node, upid, status.ExitStatus)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return fmt.Errorf("timed out waiting for task %s", upid)
+		case <-ticker.C:
+		}
+	}
+}
+
+func (c *proxmoxBackupServerClient) taskError(ctx context.Context, node, upid, exitStatus string) error {
+	if exitStatus == "" {
+		exitStatus = "unknown"
+	}
+
+	log, err := c.taskLog(ctx, node, upid)
+	if err != nil {
+		return fmt.Errorf("task %s failed with exit status %q; failed to read task log: %w", upid, exitStatus, err)
+	}
+	if log == "" {
+		return fmt.Errorf("task %s failed with exit status %q", upid, exitStatus)
+	}
+
+	return fmt.Errorf("task %s failed with exit status %q:\n%s", upid, exitStatus, log)
+}
+
+func (c *proxmoxBackupServerClient) taskLog(ctx context.Context, node, upid string) (string, error) {
+	var logLines []proxmoxBackupServerTaskLogLine
+	if err := c.get(ctx, "/nodes/"+urlPathEscape(node)+"/tasks/"+urlPathEscape(upid)+"/log?start=0&limit=0", &logLines); err != nil {
+		return "", err
+	}
+
+	lines := make([]string, 0, len(logLines))
+	for _, logLine := range logLines {
+		if logLine.Line != "" {
+			lines = append(lines, logLine.Line)
+		}
+	}
+
+	return strings.Join(lines, "\n"), nil
+}
+
+func taskNode(upid string) (string, error) {
+	parts := strings.Split(upid, ":")
+	if len(parts) < 3 || parts[0] != "UPID" || parts[1] == "" {
+		return "", fmt.Errorf("invalid task UPID %q", upid)
+	}
+
+	return parts[1], nil
+}
+
+func sha256Fingerprint(data []byte) string {
+	sum := sha256.Sum256(data)
+	parts := make([]string, len(sum))
+	for i, b := range sum {
+		parts[i] = fmt.Sprintf("%02X", b)
+	}
+
+	return strings.Join(parts, ":")
 }
 
 func (c *proxmoxBackupServerClient) do(ctx context.Context, method, path string, body any, out any) error {

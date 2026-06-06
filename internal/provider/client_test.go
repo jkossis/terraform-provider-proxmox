@@ -7,7 +7,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestProxmoxBackupServerClientAuthenticatesAndDecodesData(t *testing.T) {
@@ -112,6 +114,42 @@ func TestNewProxmoxBackupServerClientAllowsReverseProxyBasePath(t *testing.T) {
 	}
 }
 
+func TestProxmoxBackupServerClientReadsCertificateFingerprint(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	client, err := newProxmoxBackupServerClient(server.URL, "root@pam", "secret", true)
+	if err != nil {
+		t.Fatalf("newProxmoxBackupServerClient returned error: %s", err)
+	}
+
+	fingerprint, err := client.certificateFingerprint(context.Background())
+	if err != nil {
+		t.Fatalf("certificateFingerprint returned error: %s", err)
+	}
+	if got, want := fingerprint, sha256Fingerprint(server.Certificate().Raw); got != want {
+		t.Fatalf("unexpected fingerprint: got %q, want %q", got, want)
+	}
+}
+
+func TestProxmoxBackupServerClientRejectsHTTPFingerprintEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	client, err := newProxmoxBackupServerClient(server.URL, "root@pam", "secret", false)
+	if err != nil {
+		t.Fatalf("newProxmoxBackupServerClient returned error: %s", err)
+	}
+
+	_, err = client.certificateFingerprint(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got, want := err.Error(), "endpoint must use https to read certificate fingerprint"; got != want {
+		t.Fatalf("unexpected error: got %q, want %q", got, want)
+	}
+}
+
 func TestProxmoxBackupServerClientSendsCSRFPreventionTokenForWrites(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api2/json/access/ticket" {
@@ -139,5 +177,75 @@ func TestProxmoxBackupServerClientSendsCSRFPreventionTokenForWrites(t *testing.T
 
 	if err := client.post(context.Background(), "/config/s3", s3ConfigAPIModel{ID: "test"}, nil); err != nil {
 		t.Fatalf("post returned error: %s", err)
+	}
+}
+
+func TestProxmoxBackupServerClientWaitTaskPollsUntilOK(t *testing.T) {
+	upid := "UPID:pbs-01:00000001:00000002:00000003:00000004:create-datastore:pbs:root@pam:"
+	statusCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api2/json/access/ticket":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"ticket":"ticket-value","CSRFPreventionToken":"csrf-value"}}`))
+		case "/api2/json/nodes/pbs-01/tasks/" + upid + "/status":
+			statusCalls++
+			w.Header().Set("Content-Type", "application/json")
+			if statusCalls == 1 {
+				_, _ = w.Write([]byte(`{"data":{"status":"running"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := newProxmoxBackupServerClient(server.URL, "root@pam", "secret", false)
+	if err != nil {
+		t.Fatalf("newProxmoxBackupServerClient returned error: %s", err)
+	}
+
+	if err := client.waitTaskWithInterval(context.Background(), upid, time.Second, time.Millisecond); err != nil {
+		t.Fatalf("waitTaskWithInterval returned error: %s", err)
+	}
+	if statusCalls != 2 {
+		t.Fatalf("unexpected status calls: got %d, want 2", statusCalls)
+	}
+}
+
+func TestProxmoxBackupServerClientWaitTaskIncludesFailureLog(t *testing.T) {
+	upid := "UPID:pbs-01:00000001:00000002:00000003:00000004:create-datastore:pbs:root@pam:"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api2/json/access/ticket":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"ticket":"ticket-value","CSRFPreventionToken":"csrf-value"}}`))
+		case "/api2/json/nodes/pbs-01/tasks/" + upid + "/status":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"Error: create failed"}}`))
+		case "/api2/json/nodes/pbs-01/tasks/" + upid + "/log":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"n":1,"t":"creating datastore pbs"},{"n":2,"t":"permission denied"}]}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := newProxmoxBackupServerClient(server.URL, "root@pam", "secret", false)
+	if err != nil {
+		t.Fatalf("newProxmoxBackupServerClient returned error: %s", err)
+	}
+
+	err = client.waitTaskWithInterval(context.Background(), upid, time.Second, time.Millisecond)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{"Error: create failed", "creating datastore pbs", "permission denied"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to contain %q, got %q", want, err.Error())
+		}
 	}
 }
