@@ -54,7 +54,7 @@ To compile the provider, run `go install`. This will build the provider and put 
 
 To generate or update documentation, run `make generate`.
 
-In order to run the full suite of acceptance tests, set `TF_ACC=1`, `PROXMOX_ENDPOINT`, `PROXMOX_USERNAME`, and `PROXMOX_PASSWORD`, then run `make testacc`. `PROXMOX_INSECURE_TLS` is optional and should only be used for lab or self-signed Proxmox Backup Server installations.
+In order to run the full suite of acceptance tests, set `PROXMOX_ENDPOINT`, `PROXMOX_USERNAME`, and `PROXMOX_PASSWORD`, then run `mise run testacc`. The task sets `TF_ACC=1`. `PROXMOX_INSECURE_TLS` is optional and should only be used for lab or self-signed Proxmox Backup Server installations.
 
 Datastore acceptance tests also require `PROXMOX_BACKUP_SERVER_TEST_DATASTORE_PATH_PREFIX`. Import datastores by name, for example: `terraform import proxmox_backup_server_datastore.example backup`.
 
@@ -63,5 +63,5 @@ S3 configuration acceptance tests run only when `PROXMOX_BACKUP_SERVER_TEST_S3_E
 *Note:* Acceptance tests create real resources, and often cost money to run.
 
 ```shell
-make testacc
+mise run testacc
 ```
