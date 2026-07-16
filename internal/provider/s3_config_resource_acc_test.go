@@ -14,7 +14,7 @@ import (
 )
 
 func TestAccS3ConfigResource(t *testing.T) {
-	testAccPreCheck(t)
+	testAccS3PreCheck(t)
 
 	resourceName := "proxmox_backup_server_s3_config.test"
 	dataSourceName := "data.proxmox_backup_server_s3_config.test"
@@ -98,19 +98,6 @@ func TestAccS3ConfigResource(t *testing.T) {
 			},
 		},
 	})
-}
-
-func testAccProviderConfig() string {
-	insecureTLS, _ := strconv.ParseBool(os.Getenv("PROXMOX_BACKUP_SERVER_INSECURE_TLS"))
-
-	return fmt.Sprintf(`
-provider "proxmox" {
-	endpoint     = %[1]q
-	username     = %[2]q
-	password     = %[3]q
-	insecure_tls = %[4]t
-}
-`, os.Getenv("PROXMOX_BACKUP_SERVER_ENDPOINT"), os.Getenv("PROXMOX_BACKUP_SERVER_USERNAME"), os.Getenv("PROXMOX_BACKUP_SERVER_PASSWORD"), insecureTLS)
 }
 
 func testAccS3ConfigResourceConfig(id, endpoint, accessKey, secretKey, port, region, fingerprint string, includeOptional bool) string {

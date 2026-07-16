@@ -68,10 +68,12 @@ func TestAccDatastoreResource(t *testing.T) {
 				),
 			},
 			{
-				ResourceName:            resourceName,
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"reuse_datastore"},
+				ResourceName:                         resourceName,
+				ImportState:                          true,
+				ImportStateId:                        datastoreName,
+				ImportStateVerify:                    true,
+				ImportStateVerifyIdentifierAttribute: "name",
+				ImportStateVerifyIgnore:              []string{"reuse_datastore"},
 			},
 		},
 	})

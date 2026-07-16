@@ -57,3 +57,15 @@ resource "proxmox_backup_server_datastore" "example" {
 - `reuse_datastore` (Boolean) Re-use an existing datastore directory during creation.
 - `tuning` (String) Datastore tuning options in Proxmox Backup Server property-string format.
 - `verify_new` (Boolean) Verify new backups right after completion.
+
+## Import
+
+Import is supported using the following syntax:
+
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
+```shell
+#!/usr/bin/env sh
+# Import a datastore by its Proxmox Backup Server datastore name.
+terraform import proxmox_backup_server_datastore.example backup
+```

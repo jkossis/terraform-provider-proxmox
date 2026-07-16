@@ -29,6 +29,7 @@ jobs:
           cache: true
       - run: go mod download
       - run: go build -v .
+      - run: make test
       - name: Run linters
         uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
         with:
@@ -52,13 +53,13 @@ jobs:
           git diff --compact-summary --exit-code || \
             (echo; echo "Unexpected difference in directories after code generation. Run 'make generate' command and commit."; exit 1)
 
-  # Run acceptance tests in a matrix with Terraform CLI versions
+  # Acceptance tests stay disabled until CI service provisioning and credentials are configured.
   test:
     name: 'Acceptance Tests: Terraform ${{ matrix.terraform }}'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: false
+    if: ${{ false }}
     strategy:
       fail-fast: false
       matrix:
