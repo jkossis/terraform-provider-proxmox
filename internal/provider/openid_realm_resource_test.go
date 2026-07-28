@@ -58,9 +58,11 @@ func TestOpenIDRealmResourceUsesPBSFormMutationsAndPreservesClientKey(t *testing
 			assertOpenIDFormValue(t, r, "realm", "openid")
 			assertOpenIDFormValue(t, r, "issuer-url", "https://issuer.example.com")
 			assertOpenIDFormValue(t, r, "client-id", "client-id")
+			assertOpenIDFormValue(t, r, "audiences", "proxmox-backup")
 			assertOpenIDFormValue(t, r, "client-key", configuredClientKey)
 			assertOpenIDFormValue(t, r, "scopes", defaultOpenIDRealmScopes)
 			assertOpenIDFormValue(t, r, "autocreate", "true")
+			assertOpenIDFormValue(t, r, "default", "true")
 			assertOpenIDFormValue(t, r, "username-claim", "preferred_username")
 			if got := r.Form["delete"]; len(got) != 0 {
 				t.Fatalf("create request unexpectedly contained delete parameters: %#v", got)
@@ -72,7 +74,7 @@ func TestOpenIDRealmResourceUsesPBSFormMutationsAndPreservesClientKey(t *testing
 			}
 			// The API value is intentionally different: resource state must retain
 			// the configured value and must not persist a read response secret.
-			writeOpenIDResponseWithDigest(w, "digest-1", `{"realm":"openid","issuer-url":"https://issuer.example.com","client-id":"client-id","client-key":"api-redaction","scopes":"email profile","autocreate":true,"acr-values":"urn:example","prompt":"login","comment":"managed","username-claim":"preferred_username"}`)
+			writeOpenIDResponseWithDigest(w, "digest-1", `{"realm":"openid","issuer-url":"https://issuer.example.com","client-id":"client-id","client-key":"api-redaction","audiences":"proxmox-backup","scopes":"email profile","autocreate":true,"acr-values":"urn:example","prompt":"login","comment":"managed","username-claim":"preferred_username","default":true}`)
 		case 4:
 			if r.Method != http.MethodPut || r.URL.Path != "/api2/json/config/access/openid/openid" {
 				t.Fatalf("unexpected update request: %s %s", r.Method, r.URL.Path)
@@ -83,7 +85,9 @@ func TestOpenIDRealmResourceUsesPBSFormMutationsAndPreservesClientKey(t *testing
 			assertOpenIDFormValue(t, r, "digest", "digest-1")
 			assertOpenIDFormValue(t, r, "issuer-url", "https://new-issuer.example.com")
 			assertOpenIDFormValue(t, r, "client-id", "new-client-id")
+			assertOpenIDFormValue(t, r, "audiences", "proxmox-backup,terraform")
 			assertOpenIDFormValue(t, r, "autocreate", "false")
+			assertOpenIDFormValue(t, r, "default", "false")
 			if got := r.FormValue("client-key"); got != "" {
 				t.Fatalf("cleared client key was sent in update form: %q", got)
 			}
@@ -95,15 +99,38 @@ func TestOpenIDRealmResourceUsesPBSFormMutationsAndPreservesClientKey(t *testing
 			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/config/access/openid/openid" {
 				t.Fatalf("unexpected second read request: %s %s", r.Method, r.URL.Path)
 			}
-			writeOpenIDResponseWithDigest(w, "digest-2", `{"realm":"openid","issuer-url":"https://new-issuer.example.com","client-id":"new-client-id","scopes":"email profile","autocreate":false}`)
+			writeOpenIDResponseWithDigest(w, "digest-2", `{"realm":"openid","issuer-url":"https://new-issuer.example.com","client-id":"new-client-id","audiences":"proxmox-backup,terraform","scopes":"email profile","autocreate":false}`)
 		case 6:
+			if r.Method != http.MethodPut || r.URL.Path != "/api2/json/config/access/openid/openid" {
+				t.Fatalf("unexpected clear audiences request: %s %s", r.Method, r.URL.Path)
+			}
+			if got, want := r.Header.Get("Content-Type"), "application/x-www-form-urlencoded"; got != want {
+				t.Fatalf("unexpected clear audiences content type: got %q, want %q", got, want)
+			}
+			assertOpenIDFormValue(t, r, "digest", "digest-2")
+			if got := r.FormValue("audiences"); got != "" {
+				t.Fatalf("cleared audiences were sent in update form: %q", got)
+			}
+			if got, want := r.Form["delete"], []string{"audiences"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("unexpected repeated delete parameters for audiences: got %#v, want %#v", got, want)
+			}
+			if got := r.Form["delete[]"]; len(got) != 0 {
+				t.Fatalf("clear audiences request unexpectedly used delete[]: %#v", got)
+			}
+			writeOpenIDResponse(w, `null`)
+		case 7:
+			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/config/access/openid/openid" {
+				t.Fatalf("unexpected third read request: %s %s", r.Method, r.URL.Path)
+			}
+			writeOpenIDResponseWithDigest(w, "digest-3", `{"realm":"openid","issuer-url":"https://new-issuer.example.com","client-id":"new-client-id","scopes":"email profile","autocreate":false}`)
+		case 8:
 			if r.Method != http.MethodDelete || r.URL.Path != "/api2/json/config/access/openid/openid" {
 				t.Fatalf("unexpected delete request: %s %s", r.Method, r.URL.Path)
 			}
 			if got, want := r.Header.Get("Content-Type"), "application/x-www-form-urlencoded"; got != want {
 				t.Fatalf("unexpected delete content type: got %q, want %q", got, want)
 			}
-			assertOpenIDDeleteFormValue(t, r, "digest", "digest-2")
+			assertOpenIDDeleteFormValue(t, r, "digest", "digest-3")
 			writeOpenIDResponse(w, `null`)
 		default:
 			t.Fatalf("unexpected request %d: %s %s", requestNumber, r.Method, r.URL.Path)
@@ -120,10 +147,12 @@ func TestOpenIDRealmResourceUsesPBSFormMutationsAndPreservesClientKey(t *testing
 		Realm:         types.StringValue("openid"),
 		IssuerURL:     types.StringValue("https://issuer.example.com"),
 		ClientID:      types.StringValue("client-id"),
+		Audiences:     types.StringValue("proxmox-backup"),
 		ClientKey:     types.StringValue(configuredClientKey),
 		Scopes:        types.StringValue(defaultOpenIDRealmScopes),
 		AutoCreate:    types.BoolValue(true),
 		UsernameClaim: types.StringValue("preferred_username"),
+		Default:       types.BoolValue(true),
 	}
 	resource := OpenIDRealmResource{client: client}
 	if err := client.postForm(context.Background(), "/config/access/openid", openIDRealmForm(data, true), nil); err != nil {
@@ -138,15 +167,20 @@ func TestOpenIDRealmResourceUsesPBSFormMutationsAndPreservesClientKey(t *testing
 	if got, want := data.ClientKey.ValueString(), configuredClientKey; got != want {
 		t.Fatalf("client key was not preserved: got %q, want %q", got, want)
 	}
+	if got, want := data.Audiences.ValueString(), "proxmox-backup"; got != want {
+		t.Fatalf("unexpected audiences after first read: got %q, want %q", got, want)
+	}
 
 	plan := data
 	plan.IssuerURL = types.StringValue("https://new-issuer.example.com")
 	plan.ClientID = types.StringValue("new-client-id")
+	plan.Audiences = types.StringValue("proxmox-backup,terraform")
 	plan.ClientKey = types.StringNull()
 	plan.ACRValues = types.StringNull()
 	plan.Prompt = types.StringNull()
 	plan.Comment = types.StringNull()
 	plan.AutoCreate = types.BoolValue(false)
+	plan.Default = types.BoolValue(false)
 	updateForm := openIDRealmForm(plan, false)
 	for _, field := range openIDRealmDeletedFields(plan, data) {
 		updateForm.Add("delete", field)
@@ -164,14 +198,40 @@ func TestOpenIDRealmResourceUsesPBSFormMutationsAndPreservesClientKey(t *testing
 	if !plan.ACRValues.IsNull() || !plan.Prompt.IsNull() || !plan.Comment.IsNull() {
 		t.Fatal("absent optional API fields were not represented as null")
 	}
+	if plan.Default.IsNull() || plan.Default.ValueBool() {
+		t.Fatal("absent API default field was not represented as false")
+	}
 	if got, want := plan.ID.ValueString(), "openid"; got != want {
 		t.Fatalf("unexpected resource ID: got %q, want %q", got, want)
 	}
 	if got, want := plan.Digest.ValueString(), "digest-2"; got != want {
 		t.Fatalf("unexpected refreshed digest: got %q, want %q", got, want)
 	}
+	if got, want := plan.Audiences.ValueString(), "proxmox-backup,terraform"; got != want {
+		t.Fatalf("unexpected audiences after update: got %q, want %q", got, want)
+	}
+
+	clearPlan := plan
+	clearPlan.Audiences = types.StringNull()
+	clearForm := openIDRealmForm(clearPlan, false)
+	for _, field := range openIDRealmDeletedFields(clearPlan, plan) {
+		clearForm.Add("delete", field)
+	}
+	setOpenIDDigest(clearForm, plan.Digest)
+	if err := client.putForm(context.Background(), "/config/access/openid/openid", clearForm); err != nil {
+		t.Fatalf("clear audiences update returned error: %s", err)
+	}
+	if err := resource.readOpenIDRealm(context.Background(), &clearPlan); err != nil {
+		t.Fatalf("third read returned error: %s", err)
+	}
+	if !clearPlan.Audiences.IsNull() {
+		t.Fatalf("cleared audiences were not represented as null: %#v", clearPlan.Audiences)
+	}
+	if got, want := clearPlan.Digest.ValueString(), "digest-3"; got != want {
+		t.Fatalf("unexpected digest after clearing audiences: got %q, want %q", got, want)
+	}
 	deleteForm := url.Values{}
-	setOpenIDDigest(deleteForm, plan.Digest)
+	setOpenIDDigest(deleteForm, clearPlan.Digest)
 	if err := client.deleteForm(context.Background(), "/config/access/openid/openid", deleteForm); err != nil {
 		t.Fatalf("delete returned error: %s", err)
 	}
@@ -180,6 +240,7 @@ func TestOpenIDRealmResourceUsesPBSFormMutationsAndPreservesClientKey(t *testing
 func TestOpenIDRealmDeletedFieldsRepeatsPBSDeleteParameter(t *testing.T) {
 	plan := OpenIDRealmResourceModel{
 		ClientKey:  types.StringNull(),
+		Audiences:  types.StringNull(),
 		Scopes:     types.StringNull(),
 		ACRValues:  types.StringNull(),
 		Prompt:     types.StringNull(),
@@ -188,6 +249,7 @@ func TestOpenIDRealmDeletedFieldsRepeatsPBSDeleteParameter(t *testing.T) {
 	}
 	state := OpenIDRealmResourceModel{
 		ClientKey:  types.StringValue("not-used"),
+		Audiences:  types.StringValue("proxmox-backup"),
 		Scopes:     types.StringValue("email profile"),
 		ACRValues:  types.StringValue("acr"),
 		Prompt:     types.StringValue("login"),
@@ -199,8 +261,11 @@ func TestOpenIDRealmDeletedFieldsRepeatsPBSDeleteParameter(t *testing.T) {
 	for _, field := range openIDRealmDeletedFields(plan, state) {
 		form.Add("delete", field)
 	}
-	if got, want := form["delete"], []string{"client-key", "scopes", "acr-values", "prompt", "comment"}; !reflect.DeepEqual(got, want) {
+	if got, want := form["delete"], []string{"client-key", "audiences", "scopes", "acr-values", "prompt", "comment"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected delete form values: got %#v, want %#v", got, want)
+	}
+	if got := form["delete[]"]; len(got) != 0 {
+		t.Fatalf("unexpected delete[] form values: %#v", got)
 	}
 }
 
@@ -212,6 +277,7 @@ func TestOpenIDRealmRecoveryStateClearsUnknownComputedValues(t *testing.T) {
 		Scopes:        types.StringUnknown(),
 		AutoCreate:    types.BoolUnknown(),
 		UsernameClaim: types.StringUnknown(),
+		Default:       types.BoolUnknown(),
 		ID:            types.StringUnknown(),
 		Digest:        types.StringUnknown(),
 	}
@@ -220,7 +286,7 @@ func TestOpenIDRealmRecoveryStateClearsUnknownComputedValues(t *testing.T) {
 	if got, want := recovery.ID.ValueString(), "openid"; got != want {
 		t.Fatalf("unexpected recovery ID: got %q, want %q", got, want)
 	}
-	if !recovery.Digest.IsNull() || !recovery.Scopes.IsNull() || !recovery.AutoCreate.IsNull() || !recovery.UsernameClaim.IsNull() {
+	if !recovery.Digest.IsNull() || !recovery.Scopes.IsNull() || !recovery.AutoCreate.IsNull() || !recovery.UsernameClaim.IsNull() || !recovery.Default.IsNull() {
 		t.Fatalf("unknown computed values were not cleared: %#v", recovery)
 	}
 	if got, want := recovery.IssuerURL.ValueString(), "https://issuer.example.com"; got != want {
@@ -270,6 +336,7 @@ func TestOpenIDRealmCreatePersistsRecoveryStateWhenRefreshFails(t *testing.T) {
 		Comment:       types.StringNull(),
 		AutoCreate:    types.BoolValue(false),
 		UsernameClaim: types.StringUnknown(),
+		Default:       types.BoolUnknown(),
 		ID:            types.StringUnknown(),
 		Digest:        types.StringUnknown(),
 	}
@@ -332,6 +399,14 @@ func TestOpenIDRealmSchemaProtectsSecretsAndReplacesImmutableAttributes(t *testi
 	digest, ok := resp.Schema.Attributes["digest"].(schema.StringAttribute)
 	if !ok || !digest.Computed || digest.Optional || digest.Required {
 		t.Fatal("digest is not read-only and computed")
+	}
+	defaultAttribute, ok := resp.Schema.Attributes["default"].(schema.BoolAttribute)
+	if !ok || !defaultAttribute.Optional || !defaultAttribute.Computed || defaultAttribute.Default == nil {
+		t.Fatal("default does not have stable optional computed default semantics")
+	}
+	audiences, ok := resp.Schema.Attributes["audiences"].(schema.StringAttribute)
+	if !ok || !audiences.Optional || audiences.Required || audiences.Computed {
+		t.Fatal("audiences is not an optional non-computed string attribute")
 	}
 }
 

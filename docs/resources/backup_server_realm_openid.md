@@ -18,11 +18,13 @@ resource "proxmox_backup_server_realm_openid" "example" {
   issuer_url = "https://identity.example.com"
   client_id  = "proxmox-backup-server"
   client_key = var.openid_client_key
+  audiences  = "proxmox-backup"
 
   scopes         = "email profile"
   prompt         = "login"
   comment        = "Managed by Terraform"
   autocreate     = true
+  default        = false
   username_claim = "preferred_username"
 }
 ```
@@ -39,9 +41,11 @@ resource "proxmox_backup_server_realm_openid" "example" {
 ### Optional
 
 - `acr_values` (String) OpenID Authentication Context Class Reference values.
+- `audiences` (String) A comma-separated list of audiences to request from the OpenID provider.
 - `autocreate` (Boolean) Whether to automatically create users on first OpenID login. Proxmox Backup Server defaults this to false.
 - `client_key` (String, Sensitive) OpenID client key. Proxmox Backup Server may not return this value from its read API, so Terraform preserves the configured value.
 - `comment` (String) OpenID realm comment.
+- `default` (Boolean) Whether to use this OpenID realm as the default login realm. Proxmox Backup Server defaults this to false.
 - `prompt` (String) OpenID prompt value.
 - `scopes` (String) OpenID scopes. Proxmox Backup Server defaults this to `email profile`.
 - `username_claim` (String) OpenID claim used as the Proxmox Backup Server username.

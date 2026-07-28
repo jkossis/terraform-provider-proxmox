@@ -38,6 +38,7 @@ type OpenIDRealmResourceModel struct {
 	Realm         types.String `tfsdk:"realm"`
 	IssuerURL     types.String `tfsdk:"issuer_url"`
 	ClientID      types.String `tfsdk:"client_id"`
+	Audiences     types.String `tfsdk:"audiences"`
 	ClientKey     types.String `tfsdk:"client_key"`
 	Scopes        types.String `tfsdk:"scopes"`
 	ACRValues     types.String `tfsdk:"acr_values"`
@@ -45,6 +46,7 @@ type OpenIDRealmResourceModel struct {
 	Comment       types.String `tfsdk:"comment"`
 	AutoCreate    types.Bool   `tfsdk:"autocreate"`
 	UsernameClaim types.String `tfsdk:"username_claim"`
+	Default       types.Bool   `tfsdk:"default"`
 	ID            types.String `tfsdk:"id"`
 	Digest        types.String `tfsdk:"digest"`
 }
@@ -69,6 +71,10 @@ func (r *OpenIDRealmResource) Schema(ctx context.Context, req resource.SchemaReq
 			"client_id": schema.StringAttribute{
 				MarkdownDescription: "OpenID client ID.",
 				Required:            true,
+			},
+			"audiences": schema.StringAttribute{
+				MarkdownDescription: "A comma-separated list of audiences to request from the OpenID provider.",
+				Optional:            true,
 			},
 			"client_key": schema.StringAttribute{
 				MarkdownDescription: "OpenID client key. Proxmox Backup Server may not return this value from its read API, so Terraform preserves the configured value.",
@@ -96,6 +102,12 @@ func (r *OpenIDRealmResource) Schema(ctx context.Context, req resource.SchemaReq
 			},
 			"autocreate": schema.BoolAttribute{
 				MarkdownDescription: "Whether to automatically create users on first OpenID login. Proxmox Backup Server defaults this to false.",
+				Optional:            true,
+				Computed:            true,
+				Default:             booldefault.StaticBool(false),
+			},
+			"default": schema.BoolAttribute{
+				MarkdownDescription: "Whether to use this OpenID realm as the default login realm. Proxmox Backup Server defaults this to false.",
 				Optional:            true,
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
@@ -250,6 +262,7 @@ func (r *OpenIDRealmResource) readOpenIDRealmWithDigest(ctx context.Context, dat
 	data.Realm = types.StringValue(realm)
 	data.IssuerURL = types.StringValue(apiData.IssuerURL)
 	data.ClientID = types.StringValue(apiData.ClientID)
+	data.Audiences = openIDStringValue(apiData.Audiences)
 	// PBS can omit or redact client-key on read. Never copy an API value into state.
 	data.ClientKey = configuredClientKey
 	if apiData.Scopes == nil {
@@ -266,6 +279,11 @@ func (r *OpenIDRealmResource) readOpenIDRealmWithDigest(ctx context.Context, dat
 		data.AutoCreate = types.BoolValue(bool(*apiData.AutoCreate))
 	}
 	data.UsernameClaim = openIDStringValue(apiData.UsernameClaim)
+	if apiData.Default == nil {
+		data.Default = types.BoolValue(false)
+	} else {
+		data.Default = types.BoolValue(bool(*apiData.Default))
+	}
 	data.ID = types.StringValue(realm)
 	data.Digest = openIDDigestValue(digest)
 
@@ -279,6 +297,7 @@ func openIDRealmForm(data OpenIDRealmResourceModel, includeRealm bool) url.Value
 	}
 	setOpenIDRealmString(form, "issuer-url", data.IssuerURL)
 	setOpenIDRealmString(form, "client-id", data.ClientID)
+	setOpenIDRealmString(form, "audiences", data.Audiences)
 	setOpenIDRealmString(form, "client-key", data.ClientKey)
 	setOpenIDRealmString(form, "scopes", data.Scopes)
 	setOpenIDRealmString(form, "acr-values", data.ACRValues)
@@ -286,6 +305,9 @@ func openIDRealmForm(data OpenIDRealmResourceModel, includeRealm bool) url.Value
 	setOpenIDRealmString(form, "comment", data.Comment)
 	if !data.AutoCreate.IsNull() && !data.AutoCreate.IsUnknown() {
 		form.Set("autocreate", strconv.FormatBool(data.AutoCreate.ValueBool()))
+	}
+	if !data.Default.IsNull() && !data.Default.IsUnknown() {
+		form.Set("default", strconv.FormatBool(data.Default.ValueBool()))
 	}
 	if includeRealm {
 		setOpenIDRealmString(form, "username-claim", data.UsernameClaim)
@@ -316,6 +338,9 @@ func openIDRealmRecoveryState(data OpenIDRealmResourceModel) OpenIDRealmResource
 	if recovery.AutoCreate.IsUnknown() {
 		recovery.AutoCreate = types.BoolNull()
 	}
+	if recovery.Default.IsUnknown() {
+		recovery.Default = types.BoolNull()
+	}
 	if recovery.UsernameClaim.IsUnknown() {
 		recovery.UsernameClaim = types.StringNull()
 	}
@@ -331,6 +356,7 @@ func openIDRealmDeletedFields(plan, state OpenIDRealmResourceModel) []string {
 		state types.String
 	}{
 		{name: "client-key", plan: plan.ClientKey, state: state.ClientKey},
+		{name: "audiences", plan: plan.Audiences, state: state.Audiences},
 		{name: "scopes", plan: plan.Scopes, state: state.Scopes},
 		{name: "acr-values", plan: plan.ACRValues, state: state.ACRValues},
 		{name: "prompt", plan: plan.Prompt, state: state.Prompt},
@@ -342,6 +368,9 @@ func openIDRealmDeletedFields(plan, state OpenIDRealmResourceModel) []string {
 	}
 	if plan.AutoCreate.IsNull() && !state.AutoCreate.IsNull() && !state.AutoCreate.IsUnknown() {
 		deleted = append(deleted, "autocreate")
+	}
+	if plan.Default.IsNull() && !state.Default.IsNull() && !state.Default.IsUnknown() {
+		deleted = append(deleted, "default")
 	}
 
 	return deleted

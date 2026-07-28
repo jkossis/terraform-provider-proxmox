@@ -74,6 +74,7 @@ type openIDRealmAPIModel struct {
 	Realm         string                   `json:"realm"`
 	IssuerURL     string                   `json:"issuer-url"`
 	ClientID      string                   `json:"client-id"`
+	Audiences     *string                  `json:"audiences,omitempty"`
 	ClientKey     *string                  `json:"client-key,omitempty"`
 	Scopes        *string                  `json:"scopes,omitempty"`
 	ACRValues     *string                  `json:"acr-values,omitempty"`
@@ -81,6 +82,7 @@ type openIDRealmAPIModel struct {
 	Comment       *string                  `json:"comment,omitempty"`
 	AutoCreate    *proxmoxBackupServerBool `json:"autocreate,omitempty"`
 	UsernameClaim *string                  `json:"username-claim,omitempty"`
+	Default       *proxmoxBackupServerBool `json:"default,omitempty"`
 }
 
 func accessBoolPointerValue(value *proxmoxBackupServerBool) types.Bool {
