@@ -44,7 +44,7 @@ type OpenIDRealmResourceModel struct {
 	ACRValues     types.String `tfsdk:"acr_values"`
 	Prompt        types.String `tfsdk:"prompt"`
 	Comment       types.String `tfsdk:"comment"`
-	AutoCreate    types.Bool   `tfsdk:"autocreate"`
+	AutoCreate    types.Bool   `tfsdk:"auto_create"`
 	UsernameClaim types.String `tfsdk:"username_claim"`
 	Default       types.Bool   `tfsdk:"default"`
 	ID            types.String `tfsdk:"id"`
@@ -100,7 +100,7 @@ func (r *OpenIDRealmResource) Schema(ctx context.Context, req resource.SchemaReq
 				Optional:            true,
 				Validators:          []validator.String{openIDCommentValidator{}},
 			},
-			"autocreate": schema.BoolAttribute{
+			"auto_create": schema.BoolAttribute{
 				MarkdownDescription: "Whether to automatically create users on first OpenID login. Proxmox Backup Server defaults this to false.",
 				Optional:            true,
 				Computed:            true,
@@ -156,7 +156,11 @@ func (r *OpenIDRealmResource) Create(ctx context.Context, req resource.CreateReq
 	}
 
 	data.ID = types.StringValue(data.Realm.ValueString())
-	if err := r.client.postForm(ctx, "/config/access/openid", openIDRealmForm(data, true), nil); err != nil {
+	if err := r.client.withConfigMutation(ctx, r.readOpenIDRealmsDigest, func(ctx context.Context, _ *string) error {
+		// The collection POST does not accept a digest; the read still serializes
+		// creation with the other configuration mutations.
+		return r.client.postForm(ctx, "/config/access/openid", openIDRealmForm(data, true), nil)
+	}); err != nil {
 		resp.Diagnostics.AddError("Create OpenID Realm Failed", openIDRealmError(err, data.ClientKey))
 		return
 	}
@@ -200,12 +204,18 @@ func (r *OpenIDRealmResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	form := openIDRealmForm(plan, false)
-	for _, field := range openIDRealmDeletedFields(plan, state) {
-		form.Add("delete", field)
-	}
-	setOpenIDDigest(form, state.Digest)
-	if err := r.client.putForm(ctx, "/config/access/openid/"+urlPathEscape(plan.Realm.ValueString()), form); err != nil {
+	path := "/config/access/openid/" + urlPathEscape(plan.Realm.ValueString())
+	if err := r.client.withConfigMutation(ctx, func(ctx context.Context) (*string, error) {
+		var apiData openIDRealmAPIModel
+		return r.client.getWithDigest(ctx, path, &apiData)
+	}, func(ctx context.Context, digest *string) error {
+		form := openIDRealmForm(plan, false)
+		for _, field := range openIDRealmDeletedFields(plan, state) {
+			form.Add("delete", field)
+		}
+		setOpenIDDigestPointer(form, digest)
+		return r.client.putForm(ctx, path, form)
+	}); err != nil {
 		resp.Diagnostics.AddError("Update OpenID Realm Failed", openIDRealmError(err, plan.ClientKey, state.ClientKey))
 		return
 	}
@@ -223,9 +233,16 @@ func (r *OpenIDRealmResource) Delete(ctx context.Context, req resource.DeleteReq
 		return
 	}
 
-	form := url.Values{}
-	setOpenIDDigest(form, data.Digest)
-	if err := r.client.deleteForm(ctx, "/config/access/openid/"+urlPathEscape(data.Realm.ValueString()), form); err != nil {
+	path := "/config/access/openid/" + urlPathEscape(data.Realm.ValueString())
+	err := r.client.withConfigMutation(ctx, func(ctx context.Context) (*string, error) {
+		var apiData openIDRealmAPIModel
+		return r.client.getWithDigest(ctx, path, &apiData)
+	}, func(ctx context.Context, digest *string) error {
+		form := url.Values{}
+		setOpenIDDigestPointer(form, digest)
+		return r.client.deleteForm(ctx, path, form)
+	})
+	if err != nil {
 		var apiErr *proxmoxBackupServerAPIError
 		if errors.As(err, &apiErr) && apiErr.notFound() {
 			return
@@ -328,6 +345,12 @@ func setOpenIDDigest(form url.Values, digest types.String) {
 	}
 }
 
+func setOpenIDDigestPointer(form url.Values, digest *string) {
+	if digest != nil && *digest != "" {
+		form.Set("digest", *digest)
+	}
+}
+
 func openIDRealmRecoveryState(data OpenIDRealmResourceModel) OpenIDRealmResourceModel {
 	recovery := data
 	recovery.ID = types.StringValue(data.Realm.ValueString())
@@ -414,4 +437,9 @@ func openIDRealmSecretVariants(secret string) []string {
 	}
 
 	return variants
+}
+
+func (r *OpenIDRealmResource) readOpenIDRealmsDigest(ctx context.Context) (*string, error) {
+	var realms []openIDRealmAPIModel
+	return r.client.getWithDigest(ctx, "/config/access/openid", &realms)
 }

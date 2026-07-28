@@ -20,10 +20,11 @@ type UserTokenDataSource struct{ client *proxmoxBackupServerClient }
 
 type UserTokenDataSourceModel struct {
 	ID        types.String `tfsdk:"id"`
-	UserID    types.String `tfsdk:"userid"`
+	UserID    types.String `tfsdk:"user_id"`
 	TokenName types.String `tfsdk:"token_name"`
 	Enable    types.Bool   `tfsdk:"enable"`
 	Comment   types.String `tfsdk:"comment"`
+	Expire    types.Int64  `tfsdk:"expire"`
 }
 
 func (d *UserTokenDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -32,13 +33,14 @@ func (d *UserTokenDataSource) Metadata(ctx context.Context, req datasource.Metad
 
 func (d *UserTokenDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Reads a Proxmox Backup Server user API token via `/access/users/{userid}/token/{token_name}`.",
+		MarkdownDescription: "Reads a Proxmox Backup Server user API token via `/access/users/{user_id}/token/{token_name}`.",
 		Attributes: map[string]schema.Attribute{
-			"id":         schema.StringAttribute{MarkdownDescription: "Token auth ID in `userid!token_name` format.", Computed: true},
-			"userid":     schema.StringAttribute{MarkdownDescription: "Proxmox Backup Server user ID that owns the token.", Required: true},
+			"id":         schema.StringAttribute{MarkdownDescription: "Token auth ID in `user_id!token_name` format.", Computed: true},
+			"user_id":    schema.StringAttribute{MarkdownDescription: "Proxmox Backup Server user ID that owns the token.", Required: true},
 			"token_name": schema.StringAttribute{MarkdownDescription: "Token name.", Required: true},
 			"enable":     schema.BoolAttribute{MarkdownDescription: "Whether the token is enabled.", Computed: true},
 			"comment":    schema.StringAttribute{MarkdownDescription: "Token comment.", Computed: true},
+			"expire":     schema.Int64Attribute{MarkdownDescription: "Token expiration time as epoch seconds. A value of `0` means no expiration.", Computed: true},
 		},
 	}
 }
@@ -69,10 +71,7 @@ func (d *UserTokenDataSource) Read(ctx context.Context, req datasource.ReadReque
 	}
 	data.ID = types.StringValue(data.UserID.ValueString() + "!" + data.TokenName.ValueString())
 	data.Enable = accessBoolPointerValue(apiData.Enable)
-	if apiData.Comment == "" {
-		data.Comment = types.StringNull()
-	} else {
-		data.Comment = types.StringValue(apiData.Comment)
-	}
+	data.Comment = accessStringValue(apiData.Comment)
+	data.Expire = accessInt64Value(apiData.Expire)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

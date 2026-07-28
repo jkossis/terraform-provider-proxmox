@@ -15,8 +15,8 @@ Reads a Proxmox Backup Server ACL entry via `/access/acl`.
 ```terraform
 data "proxmox_backup_server_acl" "example" {
   path    = "/"
-  auth_id = "homepage@pbs"
-  role    = "Audit"
+  user_id = "homepage@pbs"
+  role_id = "Audit"
 }
 ```
 
@@ -25,11 +25,15 @@ data "proxmox_backup_server_acl" "example" {
 
 ### Required
 
-- `auth_id` (String) User or token auth ID for this ACL entry.
 - `path` (String) ACL path.
-- `role` (String) Role assigned by this ACL entry.
+- `role_id` (String) Role assigned by this ACL entry.
+- `user_id` (String) User, token, or group ID for this ACL entry.
+
+### Optional
+
+- `ugid_type` (String) ACL subject type: `user` or `group`. Defaults to `user`; use `group` for a group entry.
 
 ### Read-Only
 
-- `id` (String) ACL entry ID in `path|auth_id|role` format.
+- `id` (String) ACL entry ID in `path|user_id|role_id` format for users and tokens, or `path|group|user_id|role_id` format for groups.
 - `propagate` (Boolean) Whether this ACL entry propagates to child paths.

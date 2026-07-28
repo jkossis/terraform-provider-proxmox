@@ -3,18 +3,18 @@
 page_title: "proxmox_backup_server_user Data Source - proxmox"
 subcategory: ""
 description: |-
-  Reads a Proxmox Backup Server user via /access/users/{userid}.
+  Reads a Proxmox Backup Server user via /access/users/{user_id}.
 ---
 
 # proxmox_backup_server_user (Data Source)
 
-Reads a Proxmox Backup Server user via `/access/users/{userid}`.
+Reads a Proxmox Backup Server user via `/access/users/{user_id}`.
 
 ## Example Usage
 
 ```terraform
 data "proxmox_backup_server_user" "example" {
-  userid = "homepage@pbs"
+  user_id = "homepage@pbs"
 }
 ```
 
@@ -23,9 +23,13 @@ data "proxmox_backup_server_user" "example" {
 
 ### Required
 
-- `userid` (String) Proxmox Backup Server user ID.
+- `user_id` (String) Proxmox Backup Server user ID.
 
 ### Read-Only
 
 - `comment` (String) User comment.
+- `email` (String) User email address.
 - `enable` (Boolean) Whether the user is enabled.
+- `expire` (Number) Account expiration time as epoch seconds. A value of `0` means no expiration.
+- `first_name` (String) User first name.
+- `last_name` (String) User last name.

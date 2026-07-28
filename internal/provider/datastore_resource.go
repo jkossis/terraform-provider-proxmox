@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -133,16 +134,33 @@ func (r *DatastoreResource) Create(ctx context.Context, req resource.CreateReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	recoveryState := datastoreRecoveryState(data)
 	var upid string
-	if err := r.client.post(ctx, "/config/datastore", datastorePayload(data), &upid); err != nil {
+	err := r.client.withConfigMutation(ctx,
+		func(ctx context.Context) (*string, error) {
+			var apiData any
+			return r.client.getWithDigest(ctx, "/config/datastore", &apiData)
+		},
+		func(ctx context.Context, _ *string) error {
+			if err := r.client.post(ctx, "/config/datastore", datastorePayload(data), &upid); err != nil {
+				return err
+			}
+			resp.Diagnostics.Append(resp.State.Set(ctx, &recoveryState)...)
+			if resp.Diagnostics.HasError() {
+				return nil
+			}
+			if upid != "" {
+				return r.client.waitTask(ctx, upid)
+			}
+			return nil
+		},
+	)
+	if err != nil {
 		resp.Diagnostics.AddError("Create Datastore Failed", err.Error())
 		return
 	}
-	if upid != "" {
-		if err := r.client.waitTask(ctx, upid); err != nil {
-			resp.Diagnostics.AddError("Create Datastore Failed", err.Error())
-			return
-		}
+	if resp.Diagnostics.HasError() {
+		return
 	}
 	if err := r.readDatastore(ctx, &data); err != nil {
 		resp.Diagnostics.AddError("Read Datastore Failed", err.Error())
@@ -184,7 +202,19 @@ func (r *DatastoreResource) Update(ctx context.Context, req resource.UpdateReque
 	payload.ReuseDatastore = nil
 	payload.OverwriteInUse = nil
 	payload.Delete = datastoreDeletedFields(plan, state)
-	if err := r.client.put(ctx, "/config/datastore/"+urlPathEscape(plan.Name.ValueString()), payload); err != nil {
+	path := "/config/datastore/" + urlPathEscape(plan.Name.ValueString())
+	err := r.client.withConfigMutation(ctx,
+		func(ctx context.Context) (*string, error) {
+			var apiData datastoreAPIModel
+			return r.client.getWithDigest(ctx, path, &apiData)
+		},
+		func(ctx context.Context, digest *string) error {
+			form := datastoreForm(payload)
+			setFreshDigest(form, digest)
+			return r.client.putForm(ctx, path, form)
+		},
+	)
+	if err != nil {
 		resp.Diagnostics.AddError("Update Datastore Failed", err.Error())
 		return
 	}
@@ -201,12 +231,34 @@ func (r *DatastoreResource) Delete(ctx context.Context, req resource.DeleteReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.client.delete(ctx, "/config/datastore/"+urlPathEscape(data.Name.ValueString())); err != nil {
+	path := "/config/datastore/" + urlPathEscape(data.Name.ValueString())
+	var upid string
+	taskStarted := false
+	err := r.client.withConfigMutation(ctx,
+		func(ctx context.Context) (*string, error) {
+			var apiData datastoreAPIModel
+			return r.client.getWithDigest(ctx, path, &apiData)
+		},
+		func(ctx context.Context, _ *string) error {
+			// DELETE does not advertise a digest parameter; retain the fresh read
+			// for serialization without sending an unsupported value.
+			if err := r.client.deleteWithResponse(ctx, path, &upid); err != nil {
+				return err
+			}
+			if upid != "" {
+				taskStarted = true
+				return r.client.waitTask(ctx, upid)
+			}
+			return nil
+		},
+	)
+	if err != nil {
 		var apiErr *proxmoxBackupServerAPIError
-		if errors.As(err, &apiErr) && apiErr.notFound() {
+		if !taskStarted && errors.As(err, &apiErr) && apiErr.notFound() {
 			return
 		}
 		resp.Diagnostics.AddError("Delete Datastore Failed", err.Error())
+		return
 	}
 }
 
@@ -250,6 +302,109 @@ func datastorePayload(data DatastoreResourceModel) datastoreAPIModel {
 		ReuseDatastore:         boolPointer(data.ReuseDatastore),
 		OverwriteInUse:         boolPointer(data.OverwriteInUse),
 	}
+}
+
+func datastoreForm(payload datastoreAPIModel) url.Values {
+	form := url.Values{}
+	form.Set("name", payload.Name)
+	setStringFormValue(form, "path", payload.Path)
+	setStringFormPointer(form, "backend", payload.Backend)
+	setStringFormPointer(form, "backing-device", payload.BackingDevice)
+	setStringFormPointer(form, "comment", payload.Comment)
+	setStringFormPointer(form, "gc-schedule", payload.GCSchedule)
+	setBoolFormPointer(form, "gc-on-unmount", payload.GCOnUnmount)
+	setStringFormPointer(form, "prune-schedule", payload.PruneSchedule)
+	setInt64FormPointer(form, "keep-last", payload.KeepLast)
+	setInt64FormPointer(form, "keep-hourly", payload.KeepHourly)
+	setInt64FormPointer(form, "keep-daily", payload.KeepDaily)
+	setInt64FormPointer(form, "keep-weekly", payload.KeepWeekly)
+	setInt64FormPointer(form, "keep-monthly", payload.KeepMonthly)
+	setInt64FormPointer(form, "keep-yearly", payload.KeepYearly)
+	setBoolFormPointer(form, "verify-new", payload.VerifyNew)
+	setStringFormPointer(form, "notify-user", payload.NotifyUser)
+	setStringFormPointer(form, "notify", payload.Notify)
+	setStringFormPointer(form, "notification-mode", payload.NotificationMode)
+	setStringFormPointer(form, "notification-thresholds", payload.NotificationThresholds)
+	setStringFormPointer(form, "counter-reset-schedule", payload.CounterResetSchedule)
+	setStringFormPointer(form, "tuning", payload.Tuning)
+	setStringFormPointer(form, "maintenance-mode", payload.MaintenanceMode)
+	setBoolFormPointer(form, "reuse-datastore", payload.ReuseDatastore)
+	setBoolFormPointer(form, "overwrite-in-use", payload.OverwriteInUse)
+	for _, field := range payload.Delete {
+		form.Add("delete", field)
+	}
+	return form
+}
+
+func datastoreRecoveryState(data DatastoreResourceModel) DatastoreResourceModel {
+	recovery := data
+	if recovery.Backend.IsUnknown() {
+		recovery.Backend = types.StringNull()
+	}
+	if recovery.BackingDevice.IsUnknown() {
+		recovery.BackingDevice = types.StringNull()
+	}
+	if recovery.Comment.IsUnknown() {
+		recovery.Comment = types.StringNull()
+	}
+	if recovery.GCSchedule.IsUnknown() {
+		recovery.GCSchedule = types.StringNull()
+	}
+	if recovery.GCOnUnmount.IsUnknown() {
+		recovery.GCOnUnmount = types.BoolNull()
+	}
+	if recovery.PruneSchedule.IsUnknown() {
+		recovery.PruneSchedule = types.StringNull()
+	}
+	if recovery.KeepLast.IsUnknown() {
+		recovery.KeepLast = types.Int64Null()
+	}
+	if recovery.KeepHourly.IsUnknown() {
+		recovery.KeepHourly = types.Int64Null()
+	}
+	if recovery.KeepDaily.IsUnknown() {
+		recovery.KeepDaily = types.Int64Null()
+	}
+	if recovery.KeepWeekly.IsUnknown() {
+		recovery.KeepWeekly = types.Int64Null()
+	}
+	if recovery.KeepMonthly.IsUnknown() {
+		recovery.KeepMonthly = types.Int64Null()
+	}
+	if recovery.KeepYearly.IsUnknown() {
+		recovery.KeepYearly = types.Int64Null()
+	}
+	if recovery.VerifyNew.IsUnknown() {
+		recovery.VerifyNew = types.BoolNull()
+	}
+	if recovery.NotifyUser.IsUnknown() {
+		recovery.NotifyUser = types.StringNull()
+	}
+	if recovery.Notify.IsUnknown() {
+		recovery.Notify = types.StringNull()
+	}
+	if recovery.NotificationMode.IsUnknown() {
+		recovery.NotificationMode = types.StringNull()
+	}
+	if recovery.NotificationThresholds.IsUnknown() {
+		recovery.NotificationThresholds = types.StringNull()
+	}
+	if recovery.CounterResetSchedule.IsUnknown() {
+		recovery.CounterResetSchedule = types.StringNull()
+	}
+	if recovery.Tuning.IsUnknown() {
+		recovery.Tuning = types.StringNull()
+	}
+	if recovery.MaintenanceMode.IsUnknown() {
+		recovery.MaintenanceMode = types.StringNull()
+	}
+	if recovery.ReuseDatastore.IsUnknown() {
+		recovery.ReuseDatastore = types.BoolNull()
+	}
+	if recovery.OverwriteInUse.IsUnknown() {
+		recovery.OverwriteInUse = types.BoolNull()
+	}
+	return recovery
 }
 
 func setDatastoreData(data *DatastoreResourceModel, apiData datastoreAPIModel) {

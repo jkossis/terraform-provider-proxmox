@@ -15,8 +15,8 @@ Manages a Proxmox Backup Server ACL entry via `/access/acl`.
 ```terraform
 resource "proxmox_backup_server_acl" "example" {
   path      = "/"
-  auth_id   = proxmox_backup_server_user.example.userid
-  role      = "Audit"
+  user_id   = proxmox_backup_server_user.example.user_id
+  role_id   = "Audit"
   propagate = true
 }
 ```
@@ -26,17 +26,18 @@ resource "proxmox_backup_server_acl" "example" {
 
 ### Required
 
-- `auth_id` (String) User or token auth ID for this ACL entry.
 - `path` (String) ACL path, for example `/`.
-- `role` (String) Role assigned by this ACL entry, for example `Audit`.
+- `role_id` (String) Role assigned by this ACL entry, for example `Audit`.
+- `user_id` (String) User, token, or group ID for this ACL entry.
 
 ### Optional
 
 - `propagate` (Boolean) Whether this ACL entry propagates to child paths.
+- `ugid_type` (String) ACL subject type: `user` or `group`. Defaults to `user`; use `group` for a group entry.
 
 ### Read-Only
 
-- `id` (String) ACL entry ID in `path|auth_id|role` format.
+- `id` (String) ACL entry ID in `path|user_id|role_id` format for users and tokens, or `path|group|user_id|role_id` format for groups.
 
 ## Import
 
@@ -45,5 +46,9 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
+# Legacy path|user_id|role_id ACL ID:
 terraform import 'proxmox_backup_server_acl.example' '/|homepage@pbs|Audit'
+
+# Typed path|ugid_type|user_id|role_id ACL ID:
+terraform import 'proxmox_backup_server_acl.group' '/|group|backup-admins|Audit'
 ```

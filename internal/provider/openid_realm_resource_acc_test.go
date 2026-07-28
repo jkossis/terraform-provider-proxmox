@@ -36,7 +36,7 @@ func TestAccOpenIDRealmResource(t *testing.T) {
 					resource.TestCheckResourceAttr(resourceName, "client_id", initialClientID),
 					resource.TestCheckResourceAttr(resourceName, "audiences", initialAudiences),
 					resource.TestCheckResourceAttr(resourceName, "scopes", "email profile"),
-					resource.TestCheckResourceAttr(resourceName, "autocreate", "false"),
+					resource.TestCheckResourceAttr(resourceName, "auto_create", "false"),
 					resource.TestCheckResourceAttr(resourceName, "default", "false"),
 					resource.TestCheckResourceAttr(resourceName, "comment", "Terraform acceptance test"),
 					resource.TestCheckResourceAttr(resourceName, "username_claim", "preferred_username"),
@@ -52,7 +52,7 @@ func TestAccOpenIDRealmResource(t *testing.T) {
 					resource.TestCheckResourceAttr(resourceName, "client_id", updatedClientID),
 					resource.TestCheckResourceAttr(resourceName, "audiences", updatedAudiences),
 					resource.TestCheckResourceAttr(resourceName, "scopes", "email profile"),
-					resource.TestCheckResourceAttr(resourceName, "autocreate", "true"),
+					resource.TestCheckResourceAttr(resourceName, "auto_create", "true"),
 					resource.TestCheckResourceAttr(resourceName, "default", "false"),
 					resource.TestCheckResourceAttr(resourceName, "comment", "Terraform acceptance test updated"),
 					resource.TestCheckResourceAttr(resourceName, "username_claim", "preferred_username"),
@@ -71,7 +71,7 @@ func TestAccOpenIDRealmResource(t *testing.T) {
 	})
 }
 
-func testAccOpenIDRealmResourceConfig(realm, issuerURL, clientID, audiences, comment string, autocreate bool) string {
+func testAccOpenIDRealmResourceConfig(realm, issuerURL, clientID, audiences, comment string, autoCreate bool) string {
 	return testAccProviderConfig() + fmt.Sprintf(`
 resource "proxmox_backup_server_realm_openid" "test" {
   realm         = %[1]q
@@ -80,9 +80,9 @@ resource "proxmox_backup_server_realm_openid" "test" {
   audiences     = %[4]q
   scopes        = "email profile"
   comment       = %[5]q
-  autocreate    = %[6]t
+  auto_create   = %[6]t
   default       = false
   username_claim = "preferred_username"
 }
-`, realm, issuerURL, clientID, audiences, comment, autocreate)
+`, realm, issuerURL, clientID, audiences, comment, autoCreate)
 }

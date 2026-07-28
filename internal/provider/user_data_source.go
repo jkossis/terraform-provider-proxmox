@@ -23,9 +23,13 @@ type UserDataSource struct {
 }
 
 type UserDataSourceModel struct {
-	UserID  types.String `tfsdk:"userid"`
-	Enable  types.Bool   `tfsdk:"enable"`
-	Comment types.String `tfsdk:"comment"`
+	UserID    types.String `tfsdk:"user_id"`
+	Enable    types.Bool   `tfsdk:"enable"`
+	Comment   types.String `tfsdk:"comment"`
+	Email     types.String `tfsdk:"email"`
+	Firstname types.String `tfsdk:"first_name"`
+	Lastname  types.String `tfsdk:"last_name"`
+	Expire    types.Int64  `tfsdk:"expire"`
 }
 
 func (d *UserDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -34,11 +38,15 @@ func (d *UserDataSource) Metadata(ctx context.Context, req datasource.MetadataRe
 
 func (d *UserDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Reads a Proxmox Backup Server user via `/access/users/{userid}`.",
+		MarkdownDescription: "Reads a Proxmox Backup Server user via `/access/users/{user_id}`.",
 		Attributes: map[string]schema.Attribute{
-			"userid":  schema.StringAttribute{MarkdownDescription: "Proxmox Backup Server user ID.", Required: true},
-			"enable":  schema.BoolAttribute{MarkdownDescription: "Whether the user is enabled.", Computed: true},
-			"comment": schema.StringAttribute{MarkdownDescription: "User comment.", Computed: true},
+			"user_id":    schema.StringAttribute{MarkdownDescription: "Proxmox Backup Server user ID.", Required: true},
+			"enable":     schema.BoolAttribute{MarkdownDescription: "Whether the user is enabled.", Computed: true},
+			"comment":    schema.StringAttribute{MarkdownDescription: "User comment.", Computed: true},
+			"email":      schema.StringAttribute{MarkdownDescription: "User email address.", Computed: true},
+			"first_name": schema.StringAttribute{MarkdownDescription: "User first name.", Computed: true},
+			"last_name":  schema.StringAttribute{MarkdownDescription: "User last name.", Computed: true},
+			"expire":     schema.Int64Attribute{MarkdownDescription: "Account expiration time as epoch seconds. A value of `0` means no expiration.", Computed: true},
 		},
 	}
 }
@@ -69,10 +77,10 @@ func (d *UserDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	}
 	data.UserID = types.StringValue(apiData.UserID)
 	data.Enable = accessBoolPointerValue(apiData.Enable)
-	if apiData.Comment == "" {
-		data.Comment = types.StringNull()
-	} else {
-		data.Comment = types.StringValue(apiData.Comment)
-	}
+	data.Comment = accessStringValue(apiData.Comment)
+	data.Email = accessStringValue(apiData.Email)
+	data.Firstname = accessStringValue(apiData.Firstname)
+	data.Lastname = accessStringValue(apiData.Lastname)
+	data.Expire = accessInt64Value(apiData.Expire)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

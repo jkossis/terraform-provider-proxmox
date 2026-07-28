@@ -28,10 +28,10 @@ func (d *FingerprintDataSource) Metadata(ctx context.Context, req datasource.Met
 
 func (d *FingerprintDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Reads the SHA256 TLS certificate fingerprint for the configured Proxmox Backup Server endpoint.",
+		MarkdownDescription: "Hashes the first (leaf) TLS certificate presented by the configured HTTPS endpoint using SHA-256. It bypasses certificate verification for trust-on-first-use (TOFU) discovery. The result may be a reverse-proxy certificate rather than a PBS node certificate.",
 		Attributes: map[string]schema.Attribute{
 			"fingerprint": schema.StringAttribute{
-				MarkdownDescription: "SHA256 fingerprint of the Proxmox Backup Server TLS certificate, formatted as uppercase colon-separated hex.",
+				MarkdownDescription: "SHA-256 hash of the first (leaf) TLS certificate presented by the configured HTTPS endpoint. It bypasses certificate verification for trust-on-first-use (TOFU) discovery, and the result may be a reverse-proxy certificate rather than a PBS node certificate. Formatted as uppercase colon-separated hex.",
 				Computed:            true,
 			},
 		},

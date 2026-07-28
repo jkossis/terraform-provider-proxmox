@@ -5,9 +5,12 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -247,5 +250,220 @@ func TestProxmoxBackupServerClientWaitTaskIncludesFailureLog(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("expected error to contain %q, got %q", want, err.Error())
 		}
+	}
+}
+
+func TestProxmoxBackupServerClientConfigMutationSerializesCallbacks(t *testing.T) {
+	client := &proxmoxBackupServerClient{}
+	var active atomic.Int32
+	var overlap atomic.Bool
+	var callbackErrors atomic.Int32
+
+	enter := func() func() {
+		if active.Add(1) != 1 {
+			overlap.Store(true)
+		}
+		return func() { active.Add(-1) }
+	}
+
+	const mutationCount = 8
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(mutationCount)
+	for i := 0; i < mutationCount; i++ {
+		go func() {
+			defer waitGroup.Done()
+
+			err := client.withConfigMutation(context.Background(), func(context.Context) (*string, error) {
+				leave := enter()
+				defer leave()
+				time.Sleep(time.Millisecond)
+				digest := "fresh-digest"
+				return &digest, nil
+			}, func(context.Context, *string) error {
+				leave := enter()
+				defer leave()
+				time.Sleep(time.Millisecond)
+				return nil
+			})
+			if err != nil {
+				callbackErrors.Add(1)
+			}
+		}()
+	}
+	waitGroup.Wait()
+
+	if callbackErrors.Load() != 0 {
+		t.Fatalf("unexpected callback errors: %d", callbackErrors.Load())
+	}
+	if overlap.Load() {
+		t.Fatal("configuration mutation callbacks overlapped")
+	}
+}
+
+func TestProxmoxBackupServerClientConfigMutationPropagatesErrorsAndReleasesLock(t *testing.T) {
+	client := &proxmoxBackupServerClient{}
+	readErr := errors.New("read failed")
+	mutationErr := errors.New("mutation failed")
+
+	mutated := false
+	err := client.withConfigMutation(context.Background(), func(context.Context) (*string, error) {
+		return nil, readErr
+	}, func(context.Context, *string) error {
+		mutated = true
+		return nil
+	})
+	if !errors.Is(err, readErr) {
+		t.Fatalf("unexpected read error: got %v, want %v", err, readErr)
+	}
+	if mutated {
+		t.Fatal("mutation callback ran after read failure")
+	}
+
+	err = client.withConfigMutation(context.Background(), func(context.Context) (*string, error) {
+		digest := "digest"
+		return &digest, nil
+	}, func(context.Context, *string) error {
+		return mutationErr
+	})
+	if !errors.Is(err, mutationErr) {
+		t.Fatalf("unexpected mutation error: got %v, want %v", err, mutationErr)
+	}
+
+	if err := client.withConfigMutation(context.Background(), func(context.Context) (*string, error) {
+		digest := "digest-after-error"
+		return &digest, nil
+	}, func(context.Context, *string) error { return nil }); err != nil {
+		t.Fatalf("configuration mutation lock was not released after error: %v", err)
+	}
+}
+
+func TestProxmoxBackupServerClientConfigMutationReleasesLockAfterPanic(t *testing.T) {
+	client := &proxmoxBackupServerClient{}
+	func() {
+		defer func() {
+			if got := recover(); got != "callback panic" {
+				t.Fatalf("unexpected panic: got %v", got)
+			}
+		}()
+
+		_ = client.withConfigMutation(context.Background(), func(context.Context) (*string, error) {
+			panic("callback panic")
+		}, func(context.Context, *string) error { return nil })
+	}()
+
+	if err := client.withConfigMutation(context.Background(), func(context.Context) (*string, error) {
+		digest := "digest-after-panic"
+		return &digest, nil
+	}, func(context.Context, *string) error { return nil }); err != nil {
+		t.Fatalf("configuration mutation lock was not released after panic: %v", err)
+	}
+}
+
+func TestProxmoxBackupServerClientConfigMutationPassesFreshDigestToMutation(t *testing.T) {
+	client := &proxmoxBackupServerClient{}
+	digests := []string{"digest-1", "digest-2"}
+	var readCalls int
+	var received []string
+
+	for _, wantDigest := range digests {
+		err := client.withConfigMutation(context.Background(), func(context.Context) (*string, error) {
+			digest := digests[readCalls]
+			readCalls++
+			return &digest, nil
+		}, func(_ context.Context, digest *string) error {
+			if digest == nil {
+				t.Fatal("mutation received nil digest")
+			}
+			received = append(received, *digest)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("withConfigMutation returned error: %v", err)
+		}
+		if got := received[len(received)-1]; got != wantDigest {
+			t.Fatalf("unexpected digest handoff: got %q, want %q", got, wantDigest)
+		}
+	}
+
+	if got, want := readCalls, len(digests); got != want {
+		t.Fatalf("unexpected read callback count: got %d, want %d", got, want)
+	}
+}
+
+func TestProxmoxBackupServerClientPutAndDeleteWithResponseDecodeData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Header.Get("CSRFPreventionToken"), "csrf-value"; got != want {
+			t.Fatalf("unexpected CSRF token: got %q, want %q", got, want)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/api2/json/config/test":
+			_, _ = w.Write([]byte(`{"data":{"id":"put-result"},"digest":"put-digest"}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/api2/json/config/test":
+			_, _ = w.Write([]byte(`{"data":{"id":"delete-result"},"digest":"delete-digest"}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := &proxmoxBackupServerClient{
+		endpoint:            server.URL,
+		httpClient:          server.Client(),
+		authCookie:          &http.Cookie{Name: "PBSAuthCookie", Value: "ticket-value"},
+		csrfPreventionToken: "csrf-value",
+	}
+
+	var putResponse struct {
+		ID string `json:"id"`
+	}
+	if err := client.putWithResponse(context.Background(), "/config/test", map[string]string{"id": "test"}, &putResponse); err != nil {
+		t.Fatalf("putWithResponse returned error: %v", err)
+	}
+	if got, want := putResponse.ID, "put-result"; got != want {
+		t.Fatalf("unexpected PUT response: got %q, want %q", got, want)
+	}
+
+	var deleteResponse struct {
+		ID string `json:"id"`
+	}
+	if err := client.deleteWithResponse(context.Background(), "/config/test", &deleteResponse); err != nil {
+		t.Fatalf("deleteWithResponse returned error: %v", err)
+	}
+	if got, want := deleteResponse.ID, "delete-result"; got != want {
+		t.Fatalf("unexpected DELETE response: got %q, want %q", got, want)
+	}
+}
+
+func TestProxmoxBackupServerClientGetWithDigestDecodesTopLevelDigest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api2/json/config/test" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"id":"test"},"digest":"fresh-digest"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := &proxmoxBackupServerClient{
+		endpoint:            server.URL,
+		httpClient:          server.Client(),
+		authCookie:          &http.Cookie{Name: "PBSAuthCookie", Value: "ticket-value"},
+		csrfPreventionToken: "csrf-value",
+	}
+
+	var response struct {
+		ID string `json:"id"`
+	}
+	digest, err := client.getWithDigest(context.Background(), "/config/test", &response)
+	if err != nil {
+		t.Fatalf("getWithDigest returned error: %v", err)
+	}
+	if digest == nil || *digest != "fresh-digest" {
+		t.Fatalf("unexpected response digest: %v", digest)
+	}
+	if got, want := response.ID, "test"; got != want {
+		t.Fatalf("unexpected response data: got %q, want %q", got, want)
 	}
 }

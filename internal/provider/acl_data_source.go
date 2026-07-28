@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -21,8 +22,9 @@ type ACLDataSource struct{ client *proxmoxBackupServerClient }
 type ACLDataSourceModel struct {
 	ID        types.String `tfsdk:"id"`
 	Path      types.String `tfsdk:"path"`
-	AuthID    types.String `tfsdk:"auth_id"`
-	Role      types.String `tfsdk:"role"`
+	AuthID    types.String `tfsdk:"user_id"`
+	UGIDType  types.String `tfsdk:"ugid_type"`
+	Role      types.String `tfsdk:"role_id"`
 	Propagate types.Bool   `tfsdk:"propagate"`
 }
 
@@ -34,10 +36,11 @@ func (d *ACLDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Reads a Proxmox Backup Server ACL entry via `/access/acl`.",
 		Attributes: map[string]schema.Attribute{
-			"id":        schema.StringAttribute{MarkdownDescription: "ACL entry ID in `path|auth_id|role` format.", Computed: true},
+			"id":        schema.StringAttribute{MarkdownDescription: "ACL entry ID in `path|user_id|role_id` format for users and tokens, or `path|group|user_id|role_id` format for groups.", Computed: true},
 			"path":      schema.StringAttribute{MarkdownDescription: "ACL path.", Required: true},
-			"auth_id":   schema.StringAttribute{MarkdownDescription: "User or token auth ID for this ACL entry.", Required: true},
-			"role":      schema.StringAttribute{MarkdownDescription: "Role assigned by this ACL entry.", Required: true},
+			"user_id":   schema.StringAttribute{MarkdownDescription: "User, token, or group ID for this ACL entry.", Required: true},
+			"ugid_type": schema.StringAttribute{MarkdownDescription: "ACL subject type: `user` or `group`. Defaults to `user`; use `group` for a group entry.", Optional: true, Computed: true, Validators: []validator.String{aclUGIDTypeValidator{}}},
+			"role_id":   schema.StringAttribute{MarkdownDescription: "Role assigned by this ACL entry.", Required: true},
 			"propagate": schema.BoolAttribute{MarkdownDescription: "Whether this ACL entry propagates to child paths.", Computed: true},
 		},
 	}
@@ -67,11 +70,13 @@ func (d *ACLDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		resp.Diagnostics.AddError("Read ACL Failed", err.Error())
 		return
 	}
+	wantType := aclUGIDTypeValue(data.UGIDType)
 	for _, entry := range entries {
-		if entry.Path == data.Path.ValueString() && aclAPIAuthID(entry) == data.AuthID.ValueString() && aclAPIRole(entry) == data.Role.ValueString() {
-			data.ID = types.StringValue(aclEntryID(entry.Path, aclAPIAuthID(entry), aclAPIRole(entry)))
+		if entry.Path == data.Path.ValueString() && aclAPIUGIDType(entry) == wantType && aclAPIAuthID(entry) == data.AuthID.ValueString() && aclAPIRole(entry) == data.Role.ValueString() {
+			data.ID = types.StringValue(aclEntryIDForType(entry.Path, aclAPIAuthID(entry), aclAPIRole(entry), aclAPIUGIDType(entry)))
 			data.Path = types.StringValue(entry.Path)
 			data.AuthID = types.StringValue(aclAPIAuthID(entry))
+			data.UGIDType = types.StringValue(aclAPIUGIDType(entry))
 			data.Role = types.StringValue(aclAPIRole(entry))
 			data.Propagate = accessBoolPointerValue(entry.Propagate)
 			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)

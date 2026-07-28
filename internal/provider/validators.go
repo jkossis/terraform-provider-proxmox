@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -28,13 +29,20 @@ func (v s3EndpointValidator) ValidateString(ctx context.Context, req validator.S
 	}
 
 	value := req.ConfigValue.ValueString()
-	if strings.Contains(value, "://") || strings.ContainsAny(value, "/?#") || strings.Contains(value, ":") {
+	if strings.Contains(value, "://") || strings.ContainsAny(value, "/?#") || (strings.Contains(value, ":") && !isS3IPv6Endpoint(value)) {
 		resp.Diagnostics.AddAttributeError(
 			req.Path,
 			"Invalid S3 Endpoint",
 			"S3 endpoint must be a host name or IP address only. Do not include a protocol scheme, path, query, fragment, or port; use the port attribute for non-default ports.",
 		)
 	}
+}
+
+func isS3IPv6Endpoint(value string) bool {
+	if net.ParseIP(value) != nil {
+		return true
+	}
+	return strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") && net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")) != nil
 }
 
 type int64RangeValidator struct {
@@ -44,6 +52,30 @@ type int64RangeValidator struct {
 }
 
 type openIDCommentValidator struct{}
+
+type aclUGIDTypeValidator struct{}
+
+func (v aclUGIDTypeValidator) Description(ctx context.Context) string {
+	return "ACL subject type must be either user or group"
+}
+
+func (v aclUGIDTypeValidator) MarkdownDescription(ctx context.Context) string {
+	return "ACL subject type must be either `user` or `group`"
+}
+
+func (v aclUGIDTypeValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	if !validACLUGIDType(req.ConfigValue.ValueString()) {
+		resp.Diagnostics.AddAttributeError(
+			req.Path,
+			"Invalid ACL Subject Type",
+			"ACL subject type must be either `user` or `group`.",
+		)
+	}
+}
 
 func (v openIDCommentValidator) Description(ctx context.Context) string {
 	return "comment must be non-empty and must not have leading or trailing whitespace"

@@ -1,5 +1,5 @@
 resource "proxmox_backup_server_user_token" "example" {
-  userid     = proxmox_backup_server_user.example.userid
+  user_id    = proxmox_backup_server_user.example.user_id
   token_name = "homepage"
   enable     = true
 }

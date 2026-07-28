@@ -48,26 +48,47 @@ func (b proxmoxBackupServerBool) MarshalJSON() ([]byte, error) {
 }
 
 type userAPIModel struct {
-	UserID  string                   `json:"userid"`
-	Enable  *proxmoxBackupServerBool `json:"enable,omitempty"`
-	Comment string                   `json:"comment,omitempty"`
+	UserID    string                   `json:"userid"`
+	Enable    *proxmoxBackupServerBool `json:"enable,omitempty"`
+	Comment   *string                  `json:"comment,omitempty"`
+	Email     *string                  `json:"email,omitempty"`
+	Firstname *string                  `json:"firstname,omitempty"`
+	Lastname  *string                  `json:"lastname,omitempty"`
+	Expire    *int64                   `json:"expire,omitempty"`
+	Digest    *string                  `json:"digest,omitempty"`
+	Delete    []string                 `json:"delete,omitempty"`
 }
 
 type aclAPIModel struct {
 	Path      string                   `json:"path"`
-	AuthID    string                   `json:"auth-id,omitempty"`
+	AuthID    string                   `json:"auth-id,omitempty"` // Legacy response alias.
 	UGID      string                   `json:"ugid,omitempty"`
-	Role      string                   `json:"role,omitempty"`
+	UGIDType  string                   `json:"ugid_type,omitempty"`
+	Role      string                   `json:"role,omitempty"` // Legacy response alias.
 	RoleID    string                   `json:"roleid,omitempty"`
 	Propagate *proxmoxBackupServerBool `json:"propagate,omitempty"`
+}
+
+type aclMutationModel struct {
+	Path      string                   `json:"path"`
+	AuthID    string                   `json:"auth-id,omitempty"`
+	Group     string                   `json:"group,omitempty"`
+	Role      string                   `json:"role,omitempty"`
+	Propagate *proxmoxBackupServerBool `json:"propagate,omitempty"`
 	Delete    *proxmoxBackupServerBool `json:"delete,omitempty"`
+	Digest    *string                  `json:"digest,omitempty"`
 }
 
 type userTokenAPIModel struct {
-	TokenName string                   `json:"tokenid,omitempty"`
-	Enable    *proxmoxBackupServerBool `json:"enable,omitempty"`
-	Comment   string                   `json:"comment,omitempty"`
-	Value     string                   `json:"value,omitempty"`
+	TokenName  string                   `json:"tokenid,omitempty"`
+	Enable     *proxmoxBackupServerBool `json:"enable,omitempty"`
+	Comment    *string                  `json:"comment,omitempty"`
+	Expire     *int64                   `json:"expire,omitempty"`
+	Value      string                   `json:"value,omitempty"`
+	Secret     string                   `json:"secret,omitempty"`
+	Regenerate *proxmoxBackupServerBool `json:"regenerate,omitempty"`
+	Delete     []string                 `json:"delete,omitempty"`
+	Digest     *string                  `json:"digest,omitempty"`
 }
 
 type openIDRealmAPIModel struct {
@@ -100,20 +121,57 @@ func accessBoolPointer(value types.Bool) *proxmoxBackupServerBool {
 	return &v
 }
 
+func accessStringPointer(value types.String) *string {
+	if value.IsNull() || value.IsUnknown() {
+		return nil
+	}
+	v := value.ValueString()
+	return &v
+}
+
+func accessInt64Pointer(value types.Int64) *int64 {
+	if value.IsNull() || value.IsUnknown() {
+		return nil
+	}
+	v := value.ValueInt64()
+	return &v
+}
+
+func accessStringValue(value *string) types.String {
+	if value == nil {
+		return types.StringNull()
+	}
+	return types.StringValue(*value)
+}
+
+func accessInt64Value(value *int64) types.Int64 {
+	if value == nil {
+		return types.Int64Value(0)
+	}
+	return types.Int64Value(*value)
+}
+
 func aclEntryID(path, authID, role string) string {
 	return path + "|" + authID + "|" + role
 }
 
 func aclAPIAuthID(apiData aclAPIModel) string {
-	if apiData.AuthID != "" {
-		return apiData.AuthID
+	if apiData.UGID != "" {
+		return apiData.UGID
 	}
-	return apiData.UGID
+	return apiData.AuthID
+}
+
+func aclAPIUGIDType(apiData aclAPIModel) string {
+	if apiData.UGIDType == "" {
+		return "user"
+	}
+	return apiData.UGIDType
 }
 
 func aclAPIRole(apiData aclAPIModel) string {
-	if apiData.Role != "" {
-		return apiData.Role
+	if apiData.RoleID != "" {
+		return apiData.RoleID
 	}
-	return apiData.RoleID
+	return apiData.Role
 }

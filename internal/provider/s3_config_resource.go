@@ -5,9 +5,11 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -193,13 +195,26 @@ func (r *S3ConfigResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	if err := r.client.post(ctx, "/config/s3", payload, nil); err != nil {
-		resp.Diagnostics.AddError("Create S3 Config Failed", err.Error())
+	err := r.client.withConfigMutation(ctx,
+		func(context.Context) (*string, error) {
+			return nil, nil
+		},
+		func(ctx context.Context, _ *string) error {
+			return r.client.post(ctx, "/config/s3", payload, nil)
+		},
+	)
+	if err != nil {
+		resp.Diagnostics.AddError("Create S3 Config Failed", s3ConfigError(err, data))
 		return
 	}
 
+	recoveryState := s3ConfigRecoveryState(data)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &recoveryState)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if err := r.readS3Config(ctx, &data); err != nil {
-		resp.Diagnostics.AddError("Read S3 Config Failed", err.Error())
+		resp.Diagnostics.AddError("Read S3 Config Failed", s3ConfigError(err, data))
 		return
 	}
 
@@ -219,7 +234,7 @@ func (r *S3ConfigResource) Read(ctx context.Context, req resource.ReadRequest, r
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Read S3 Config Failed", err.Error())
+		resp.Diagnostics.AddError("Read S3 Config Failed", s3ConfigError(err, data))
 		return
 	}
 
@@ -231,24 +246,42 @@ func (r *S3ConfigResource) Update(ctx context.Context, req resource.UpdateReques
 	var state S3ConfigResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	var config S3ConfigResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if config.PathStyle.IsNull() {
+		plan.PathStyle = types.BoolNull()
+	}
 
-	payload, diags := s3ConfigPayload(ctx, plan)
+	form, diags := s3ConfigForm(ctx, plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	payload.Delete = s3ConfigDeletedFields(plan, state)
+	for _, field := range s3ConfigDeletedFields(plan, state) {
+		form.Add("delete", field)
+	}
 
-	if err := r.client.put(ctx, "/config/s3/"+urlPathEscape(plan.ID.ValueString()), payload); err != nil {
-		resp.Diagnostics.AddError("Update S3 Config Failed", err.Error())
+	path := "/config/s3/" + urlPathEscape(plan.ID.ValueString())
+	err := r.client.withConfigMutation(ctx,
+		func(ctx context.Context) (*string, error) {
+			var apiData s3ConfigAPIModel
+			return r.client.getWithDigest(ctx, path, &apiData)
+		},
+		func(ctx context.Context, digest *string) error {
+			setFreshDigest(form, digest)
+			return r.client.putForm(ctx, path, form)
+		},
+	)
+	if err != nil {
+		resp.Diagnostics.AddError("Update S3 Config Failed", s3ConfigError(err, plan, state))
 		return
 	}
 
 	if err := r.readS3Config(ctx, &plan); err != nil {
-		resp.Diagnostics.AddError("Read S3 Config Failed", err.Error())
+		resp.Diagnostics.AddError("Read S3 Config Failed", s3ConfigError(err, plan, state))
 		return
 	}
 
@@ -262,12 +295,27 @@ func (r *S3ConfigResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	if err := r.client.delete(ctx, "/config/s3/"+urlPathEscape(data.ID.ValueString())); err != nil {
+	path := "/config/s3/" + urlPathEscape(data.ID.ValueString())
+	err := r.client.withConfigMutation(ctx,
+		func(ctx context.Context) (*string, error) {
+			var apiData s3ConfigAPIModel
+			return r.client.getWithDigest(ctx, path, &apiData)
+		},
+		func(ctx context.Context, digest *string) error {
+			if digest == nil || *digest == "" {
+				return r.client.delete(ctx, path)
+			}
+			form := url.Values{}
+			setFreshDigest(form, digest)
+			return r.client.deleteForm(ctx, path, form)
+		},
+	)
+	if err != nil {
 		var apiErr *proxmoxBackupServerAPIError
 		if errors.As(err, &apiErr) && apiErr.notFound() {
 			return
 		}
-		resp.Diagnostics.AddError("Delete S3 Config Failed", err.Error())
+		resp.Diagnostics.AddError("Delete S3 Config Failed", s3ConfigError(err, data))
 	}
 }
 
@@ -331,8 +379,37 @@ func s3ConfigPayload(ctx context.Context, data S3ConfigResourceModel) (s3ConfigA
 	}, diags
 }
 
+func s3ConfigForm(ctx context.Context, data S3ConfigResourceModel) (url.Values, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	quirks, listDiags := stringListElements(ctx, data.ProviderQuirks)
+	diags.Append(listDiags...)
+
+	form := url.Values{}
+	form.Set("id", data.ID.ValueString())
+	form.Set("access-key", data.AccessKey.ValueString())
+	form.Set("secret-key", data.SecretKey.ValueString())
+	form.Set("endpoint", data.Endpoint.ValueString())
+	setInt64FormPointer(form, "port", int64Pointer(data.Port))
+	setStringFormPointer(form, "region", stringPointer(data.Region))
+	setStringFormPointer(form, "fingerprint", stringPointer(data.Fingerprint))
+	setBoolFormPointer(form, "path-style", boolPointer(data.PathStyle))
+	setStringFormPointer(form, "rate-in", stringPointer(data.RateIn))
+	setStringFormPointer(form, "burst-in", stringPointer(data.BurstIn))
+	setStringFormPointer(form, "rate-out", stringPointer(data.RateOut))
+	setStringFormPointer(form, "burst-out", stringPointer(data.BurstOut))
+	if len(quirks) > 0 {
+		form.Set("provider-quirks", strings.Join(quirks, ","))
+	}
+	setInt64FormPointer(form, "put-rate-limit", int64Pointer(data.PutRateLimit))
+
+	return form, diags
+}
+
 func s3ConfigDeletedFields(plan, state S3ConfigResourceModel) []string {
 	var deleted []string
+	if plan.PathStyle.IsNull() && !state.PathStyle.IsNull() && !state.PathStyle.IsUnknown() && state.PathStyle.ValueBool() {
+		deleted = append(deleted, "path-style")
+	}
 	if plan.Port.IsNull() && !state.Port.IsNull() {
 		deleted = append(deleted, "port")
 	}
@@ -359,6 +436,111 @@ func s3ConfigDeletedFields(plan, state S3ConfigResourceModel) []string {
 	}
 
 	return deleted
+}
+
+func s3ConfigRecoveryState(data S3ConfigResourceModel) S3ConfigResourceModel {
+	recovery := data
+	if recovery.Port.IsUnknown() {
+		recovery.Port = types.Int64Null()
+	}
+	if recovery.Region.IsUnknown() {
+		recovery.Region = types.StringNull()
+	}
+	if recovery.Fingerprint.IsUnknown() {
+		recovery.Fingerprint = types.StringNull()
+	}
+	if recovery.PathStyle.IsUnknown() {
+		recovery.PathStyle = types.BoolNull()
+	}
+	if recovery.RateIn.IsUnknown() {
+		recovery.RateIn = types.StringNull()
+	}
+	if recovery.BurstIn.IsUnknown() {
+		recovery.BurstIn = types.StringNull()
+	}
+	if recovery.RateOut.IsUnknown() {
+		recovery.RateOut = types.StringNull()
+	}
+	if recovery.BurstOut.IsUnknown() {
+		recovery.BurstOut = types.StringNull()
+	}
+	if recovery.ProviderQuirks.IsUnknown() {
+		recovery.ProviderQuirks = types.ListNull(types.StringType)
+	}
+	if recovery.PutRateLimit.IsUnknown() {
+		recovery.PutRateLimit = types.Int64Null()
+	}
+	return recovery
+}
+
+func s3ConfigError(err error, data ...S3ConfigResourceModel) string {
+	message := err.Error()
+	for _, model := range data {
+		for _, credential := range []string{model.AccessKey.ValueString(), model.SecretKey.ValueString()} {
+			if credential != "" {
+				for _, variant := range s3CredentialVariants(credential) {
+					message = strings.ReplaceAll(message, variant, "[REDACTED]")
+				}
+			}
+		}
+	}
+	return message
+}
+
+func s3CredentialVariants(credential string) []string {
+	variants := []string{
+		credential,
+		url.QueryEscape(credential),
+		url.PathEscape(credential),
+		strconv.Quote(credential),
+		strconv.QuoteToASCII(credential),
+	}
+	if encoded, err := json.Marshal(credential); err == nil {
+		quoted := string(encoded)
+		variants = append(variants, quoted)
+		if len(quoted) >= 2 {
+			variants = append(variants, quoted[1:len(quoted)-1])
+		}
+	}
+
+	// Error bodies may quote or escape an already encoded form value. Include
+	// one additional form/path encoding layer so none of those representations
+	// can reintroduce a configured credential into diagnostics.
+	baseVariants := append([]string(nil), variants...)
+	for _, variant := range baseVariants {
+		variants = append(variants, url.QueryEscape(variant), url.PathEscape(variant))
+	}
+	return variants
+}
+
+func setFreshDigest(form url.Values, digest *string) {
+	if digest != nil && *digest != "" {
+		form.Set("digest", *digest)
+	}
+}
+
+func setStringFormValue(form url.Values, name, value string) {
+	if value != "" {
+		form.Set(name, value)
+	}
+}
+
+func setStringFormPointer(form url.Values, name string, value *string) {
+	if value != nil {
+		form.Set(name, *value)
+	}
+}
+
+func setInt64FormPointer(form url.Values, name string, value *int64) {
+	if value != nil {
+		form.Set(name, strconv.FormatInt(*value, 10))
+	}
+}
+
+func setBoolFormPointer(form url.Values, name string, value *bool) {
+	if value != nil {
+		form.Set(name, strconv.FormatBool(*value))
+	}
 }
 
 func providerQuirksShouldBeDeleted(plan, state types.List) bool {

@@ -26,6 +26,7 @@ type proxmoxBackupServerClient struct {
 	httpClient *http.Client
 
 	authMu              sync.Mutex
+	mutationMu          sync.Mutex
 	authCookie          *http.Cookie
 	csrfPreventionToken string
 }
@@ -161,7 +162,11 @@ func (c *proxmoxBackupServerClient) post(ctx context.Context, path string, body 
 }
 
 func (c *proxmoxBackupServerClient) put(ctx context.Context, path string, body any) error {
-	return c.do(ctx, http.MethodPut, path, body, nil)
+	return c.putWithResponse(ctx, path, body, nil)
+}
+
+func (c *proxmoxBackupServerClient) putWithResponse(ctx context.Context, path string, body any, out any) error {
+	return c.do(ctx, http.MethodPut, path, body, out)
 }
 
 func (c *proxmoxBackupServerClient) postForm(ctx context.Context, path string, form url.Values, out any) error {
@@ -169,19 +174,48 @@ func (c *proxmoxBackupServerClient) postForm(ctx context.Context, path string, f
 }
 
 func (c *proxmoxBackupServerClient) putForm(ctx context.Context, path string, form url.Values) error {
-	return c.doForm(ctx, http.MethodPut, path, form, nil)
+	return c.putFormWithResponse(ctx, path, form, nil)
+}
+
+func (c *proxmoxBackupServerClient) putFormWithResponse(ctx context.Context, path string, form url.Values, out any) error {
+	return c.doForm(ctx, http.MethodPut, path, form, out)
 }
 
 func (c *proxmoxBackupServerClient) deleteForm(ctx context.Context, path string, form url.Values) error {
-	return c.doForm(ctx, http.MethodDelete, path, form, nil)
+	return c.deleteFormWithResponse(ctx, path, form, nil)
+}
+
+func (c *proxmoxBackupServerClient) deleteFormWithResponse(ctx context.Context, path string, form url.Values, out any) error {
+	return c.doForm(ctx, http.MethodDelete, path, form, out)
 }
 
 func (c *proxmoxBackupServerClient) delete(ctx context.Context, path string) error {
-	return c.do(ctx, http.MethodDelete, path, nil, nil)
+	return c.deleteWithResponse(ctx, path, nil)
+}
+
+func (c *proxmoxBackupServerClient) deleteWithResponse(ctx context.Context, path string, out any) error {
+	return c.do(ctx, http.MethodDelete, path, nil, out)
 }
 
 func (c *proxmoxBackupServerClient) getWithDigest(ctx context.Context, path string, out any) (*string, error) {
 	return c.doWithDigest(ctx, http.MethodGet, path, out)
+}
+
+// withConfigMutation serializes a configuration read and its following
+// mutation. The read callback must obtain a current configuration digest, and
+// the mutation callback receives that digest before any other mutation can
+// enter the critical section. No conflict retry is performed here; callers
+// receive the server's mutation error unchanged.
+func (c *proxmoxBackupServerClient) withConfigMutation(ctx context.Context, readDigest func(context.Context) (*string, error), mutate func(context.Context, *string) error) error {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
+
+	digest, err := readDigest(ctx)
+	if err != nil {
+		return err
+	}
+
+	return mutate(ctx, digest)
 }
 
 func (c *proxmoxBackupServerClient) certificateFingerprint(ctx context.Context) (string, error) {

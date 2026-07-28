@@ -8,7 +8,7 @@ resource "proxmox_backup_server_realm_openid" "example" {
   scopes         = "email profile"
   prompt         = "login"
   comment        = "Managed by Terraform"
-  autocreate     = true
+  auto_create    = true
   default        = false
   username_claim = "preferred_username"
 }

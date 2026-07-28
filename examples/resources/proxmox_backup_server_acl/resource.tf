@@ -1,6 +1,6 @@
 resource "proxmox_backup_server_acl" "example" {
   path      = "/"
-  auth_id   = proxmox_backup_server_user.example.userid
-  role      = "Audit"
+  user_id   = proxmox_backup_server_user.example.user_id
+  role_id   = "Audit"
   propagate = true
 }

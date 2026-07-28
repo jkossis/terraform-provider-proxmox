@@ -1,3 +1,3 @@
 data "proxmox_backup_server_user" "example" {
-  userid = "homepage@pbs"
+  user_id = "homepage@pbs"
 }

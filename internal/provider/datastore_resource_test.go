@@ -5,11 +5,15 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -222,6 +226,320 @@ func TestReadDatastoreUsesConfigDatastoreEndpoint(t *testing.T) {
 	if !data.VerifyNew.ValueBool() {
 		t.Fatal("expected verify_new to be true")
 	}
+}
+
+func TestDatastoreCreatePersistsRecoveryStateWhenRefreshFails(t *testing.T) {
+	requestNumber := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestNumber++
+		switch requestNumber {
+		case 1:
+			writeDatastoreResponse(w, `{"ticket":"ticket","CSRFPreventionToken":"csrf"}`)
+		case 2:
+			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/config/datastore" {
+				t.Fatalf("unexpected digest request: %s %s", r.Method, r.URL.Path)
+			}
+			writeDatastoreResponseWithDigest(w, `[]`, "fresh-digest")
+		case 3:
+			if r.Method != http.MethodPost || r.URL.Path != "/api2/json/config/datastore" {
+				t.Fatalf("unexpected create request: %s %s", r.Method, r.URL.Path)
+			}
+			writeDatastoreResponse(w, `null`)
+		case 4:
+			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/config/datastore/backup" {
+				t.Fatalf("unexpected refresh request: %s %s", r.Method, r.URL.Path)
+			}
+			http.Error(w, "refresh failed", http.StatusInternalServerError)
+		default:
+			t.Fatalf("unexpected request %d: %s %s", requestNumber, r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := newProxmoxBackupServerClient(server.URL, "root@pam", "password", false)
+	if err != nil {
+		t.Fatalf("newProxmoxBackupServerClient returned error: %s", err)
+	}
+
+	var schemaResponse resource.SchemaResponse
+	NewDatastoreResource().Schema(context.Background(), resource.SchemaRequest{}, &schemaResponse)
+	plan := tfsdk.Plan{Schema: schemaResponse.Schema}
+	planData := DatastoreResourceModel{
+		Name: types.StringValue("backup"),
+		Path: types.StringValue("/mnt/datastore/backup"),
+	}
+	if diags := plan.Set(context.Background(), &planData); diags.HasError() {
+		t.Fatalf("setting test plan returned diagnostics: %#v", diags)
+	}
+
+	response := resource.CreateResponse{State: tfsdk.State(plan)}
+	resourceUnderTest := DatastoreResource{client: client}
+	resourceUnderTest.Create(context.Background(), resource.CreateRequest{Plan: plan}, &response)
+	if !response.Diagnostics.HasError() {
+		t.Fatal("expected refresh error")
+	}
+
+	var recovered DatastoreResourceModel
+	if diags := response.State.Get(context.Background(), &recovered); diags.HasError() {
+		t.Fatalf("reading recovery state returned diagnostics: %#v", diags)
+	}
+	if got, want := recovered.Name.ValueString(), "backup"; got != want {
+		t.Fatalf("unexpected recovered name: got %q, want %q", got, want)
+	}
+	if got, want := recovered.Path.ValueString(), "/mnt/datastore/backup"; got != want {
+		t.Fatalf("unexpected recovered path: got %q, want %q", got, want)
+	}
+}
+
+func TestDatastoreCreatePersistsRecoveryStateBeforeUPIDTaskWait(t *testing.T) {
+	requestNumber := 0
+	upid := "UPID:node:00000001:00000001:00000001:create:backup:root@pam:"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestNumber++
+		switch requestNumber {
+		case 1:
+			writeDatastoreResponse(w, `{"ticket":"ticket","CSRFPreventionToken":"csrf"}`)
+		case 2:
+			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/config/datastore" {
+				t.Fatalf("unexpected digest request: %s %s", r.Method, r.URL.Path)
+			}
+			writeDatastoreResponseWithDigest(w, `[]`, "fresh-digest")
+		case 3:
+			if r.Method != http.MethodPost || r.URL.Path != "/api2/json/config/datastore" {
+				t.Fatalf("unexpected create request: %s %s", r.Method, r.URL.Path)
+			}
+			writeDatastoreResponse(w, fmt.Sprintf(`%q`, upid))
+		case 4:
+			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/nodes/node/tasks/UPID:node:00000001:00000001:00000001:create:backup:root@pam:/status" {
+				t.Fatalf("unexpected task status request: %s %s", r.Method, r.URL.Path)
+			}
+			writeDatastoreResponse(w, `{"status":"stopped","exitstatus":"ERROR"}`)
+		case 5:
+			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/nodes/node/tasks/UPID:node:00000001:00000001:00000001:create:backup:root@pam:/log" {
+				t.Fatalf("unexpected task log request: %s %s", r.Method, r.URL.Path)
+			}
+			writeDatastoreResponse(w, `[{"t":"create failed"}]`)
+		default:
+			t.Fatalf("unexpected request %d: %s %s", requestNumber, r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := newProxmoxBackupServerClient(server.URL, "root@pam", "password", false)
+	if err != nil {
+		t.Fatalf("newProxmoxBackupServerClient returned error: %s", err)
+	}
+	plan := datastoreTestPlan(t, DatastoreResourceModel{
+		Name: types.StringValue("backup"),
+		Path: types.StringValue("/mnt/datastore/backup"),
+	})
+	response := resource.CreateResponse{State: tfsdk.State(plan)}
+	resourceUnderTest := DatastoreResource{client: client}
+	resourceUnderTest.Create(context.Background(), resource.CreateRequest{Plan: plan}, &response)
+	if !response.Diagnostics.HasError() {
+		t.Fatal("expected task failure diagnostics")
+	}
+	if got := response.Diagnostics[0].Detail(); got == "" || !containsAll(got, "create failed", "ERROR") {
+		t.Fatalf("task failure diagnostic did not include task details: %q", got)
+	}
+
+	var recovered DatastoreResourceModel
+	if diags := response.State.Get(context.Background(), &recovered); diags.HasError() {
+		t.Fatalf("reading recovery state returned diagnostics: %#v", diags)
+	}
+	if got, want := recovered.Name.ValueString(), "backup"; got != want {
+		t.Fatalf("unexpected recovered name: got %q, want %q", got, want)
+	}
+	if got, want := recovered.Path.ValueString(), "/mnt/datastore/backup"; got != want {
+		t.Fatalf("unexpected recovered path: got %q, want %q", got, want)
+	}
+}
+
+func TestDatastoreDeleteAcceptsNullResponseAfterFreshDigestRead(t *testing.T) {
+	requestNumber := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestNumber++
+		switch requestNumber {
+		case 1:
+			writeDatastoreResponse(w, `{"ticket":"ticket","CSRFPreventionToken":"csrf"}`)
+		case 2:
+			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/config/datastore/backup" {
+				t.Fatalf("unexpected digest request: %s %s", r.Method, r.URL.Path)
+			}
+			writeDatastoreResponseWithDigest(w, `{"name":"backup","path":"/mnt/datastore/backup"}`, "fresh-digest")
+		case 3:
+			if r.Method != http.MethodDelete || r.URL.Path != "/api2/json/config/datastore/backup" {
+				t.Fatalf("unexpected delete request: %s %s", r.Method, r.URL.Path)
+			}
+			writeDatastoreResponse(w, `null`)
+		default:
+			t.Fatalf("unexpected request %d: %s %s", requestNumber, r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := newProxmoxBackupServerClient(server.URL, "root@pam", "password", false)
+	if err != nil {
+		t.Fatalf("newProxmoxBackupServerClient returned error: %s", err)
+	}
+	state := datastoreTestState(t, DatastoreResourceModel{
+		Name: types.StringValue("backup"),
+		Path: types.StringValue("/mnt/datastore/backup"),
+	})
+	response := resource.DeleteResponse{}
+	resourceUnderTest := DatastoreResource{client: client}
+	resourceUnderTest.Delete(context.Background(), resource.DeleteRequest{State: state}, &response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("unexpected delete diagnostics: %#v", response.Diagnostics)
+	}
+	if got, want := requestNumber, 3; got != want {
+		t.Fatalf("unexpected request count: got %d, want %d", got, want)
+	}
+}
+
+func TestDatastoreDeleteWaitsForUPIDAndReportsTaskFailure(t *testing.T) {
+	requestNumber := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestNumber++
+		switch requestNumber {
+		case 1:
+			writeDatastoreResponse(w, `{"ticket":"ticket","CSRFPreventionToken":"csrf"}`)
+		case 2:
+			writeDatastoreResponseWithDigest(w, `{"name":"backup","path":"/mnt/datastore/backup"}`, "fresh-digest")
+		case 3:
+			if r.Method != http.MethodDelete || r.URL.Path != "/api2/json/config/datastore/backup" {
+				t.Fatalf("unexpected delete request: %s %s", r.Method, r.URL.Path)
+			}
+			writeDatastoreResponse(w, `"UPID:node:00000001:00000001:00000001:destroy:backup:root@pam:"`)
+		case 4:
+			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/nodes/node/tasks/UPID:node:00000001:00000001:00000001:destroy:backup:root@pam:/status" {
+				t.Fatalf("unexpected task status request: %s %s", r.Method, r.URL.Path)
+			}
+			writeDatastoreResponse(w, `{"status":"stopped","exitstatus":"ERROR"}`)
+		case 5:
+			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/nodes/node/tasks/UPID:node:00000001:00000001:00000001:destroy:backup:root@pam:/log" {
+				t.Fatalf("unexpected task log request: %s %s", r.Method, r.URL.Path)
+			}
+			writeDatastoreResponse(w, `[{"t":"destroy failed"}]`)
+		default:
+			t.Fatalf("unexpected request %d: %s %s", requestNumber, r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := newProxmoxBackupServerClient(server.URL, "root@pam", "password", false)
+	if err != nil {
+		t.Fatalf("newProxmoxBackupServerClient returned error: %s", err)
+	}
+	state := datastoreTestState(t, DatastoreResourceModel{
+		Name: types.StringValue("backup"),
+		Path: types.StringValue("/mnt/datastore/backup"),
+	})
+	response := resource.DeleteResponse{}
+	resourceUnderTest := DatastoreResource{client: client}
+	resourceUnderTest.Delete(context.Background(), resource.DeleteRequest{State: state}, &response)
+	if !response.Diagnostics.HasError() {
+		t.Fatal("expected task failure diagnostics")
+	}
+	if got := response.Diagnostics[0].Detail(); got == "" || !containsAll(got, "destroy failed", "ERROR") {
+		t.Fatalf("task failure diagnostic did not include task details: %q", got)
+	}
+}
+
+func TestDatastoreUpdateUsesFreshDigest(t *testing.T) {
+	requestNumber := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestNumber++
+		switch requestNumber {
+		case 1:
+			writeDatastoreResponse(w, `{"ticket":"ticket","CSRFPreventionToken":"csrf"}`)
+		case 2:
+			writeDatastoreResponseWithDigest(w, `{"name":"backup","path":"/mnt/datastore/backup"}`, "fresh-digest")
+		case 3:
+			if r.Method != http.MethodPut || r.URL.Path != "/api2/json/config/datastore/backup" {
+				t.Fatalf("unexpected update request: %s %s", r.Method, r.URL.Path)
+			}
+			if got := r.FormValue("digest"); got != "fresh-digest" {
+				t.Fatalf("unexpected update digest: got %q", got)
+			}
+			writeDatastoreResponse(w, `null`)
+		case 4:
+			writeDatastoreResponse(w, `{"name":"backup","path":"/mnt/datastore/backup","comment":"updated"}`)
+		default:
+			t.Fatalf("unexpected request %d: %s %s", requestNumber, r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := newProxmoxBackupServerClient(server.URL, "root@pam", "password", false)
+	if err != nil {
+		t.Fatalf("newProxmoxBackupServerClient returned error: %s", err)
+	}
+	var schemaResponse resource.SchemaResponse
+	NewDatastoreResource().Schema(context.Background(), resource.SchemaRequest{}, &schemaResponse)
+	plan := tfsdk.Plan{Schema: schemaResponse.Schema}
+	planData := DatastoreResourceModel{
+		Name:    types.StringValue("backup"),
+		Path:    types.StringValue("/mnt/datastore/backup"),
+		Comment: types.StringValue("updated"),
+	}
+	if diags := plan.Set(context.Background(), &planData); diags.HasError() {
+		t.Fatalf("setting test plan returned diagnostics: %#v", diags)
+	}
+	state := datastoreTestState(t, DatastoreResourceModel{
+		Name: types.StringValue("backup"),
+		Path: types.StringValue("/mnt/datastore/backup"),
+	})
+	response := resource.UpdateResponse{State: tfsdk.State{Schema: schemaResponse.Schema}}
+	resourceUnderTest := DatastoreResource{client: client}
+	resourceUnderTest.Update(context.Background(), resource.UpdateRequest{Plan: plan, State: state}, &response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("unexpected update diagnostics: %#v", response.Diagnostics)
+	}
+}
+
+func datastoreTestState(t *testing.T, data DatastoreResourceModel) tfsdk.State {
+	t.Helper()
+	var schemaResponse resource.SchemaResponse
+	NewDatastoreResource().Schema(context.Background(), resource.SchemaRequest{}, &schemaResponse)
+	state := tfsdk.State{Schema: schemaResponse.Schema}
+	if diags := state.Set(context.Background(), &data); diags.HasError() {
+		t.Fatalf("setting test state returned diagnostics: %#v", diags)
+	}
+	return state
+}
+
+func datastoreTestPlan(t *testing.T, data DatastoreResourceModel) tfsdk.Plan {
+	t.Helper()
+	var schemaResponse resource.SchemaResponse
+	NewDatastoreResource().Schema(context.Background(), resource.SchemaRequest{}, &schemaResponse)
+	plan := tfsdk.Plan{Schema: schemaResponse.Schema}
+	if diags := plan.Set(context.Background(), &data); diags.HasError() {
+		t.Fatalf("setting test plan returned diagnostics: %#v", diags)
+	}
+	return plan
+}
+
+func writeDatastoreResponse(w http.ResponseWriter, data string) {
+	writeDatastoreResponseWithDigest(w, data, "")
+}
+
+func writeDatastoreResponseWithDigest(w http.ResponseWriter, data, digest string) {
+	w.Header().Set("Content-Type", "application/json")
+	if digest == "" {
+		_, _ = fmt.Fprintf(w, `{"data":%s}`, data)
+		return
+	}
+	_, _ = fmt.Fprintf(w, `{"data":%s,"digest":%q}`, data, digest)
+}
+
+func containsAll(value string, required ...string) bool {
+	for _, item := range required {
+		if !strings.Contains(value, item) {
+			return false
+		}
+	}
+	return true
 }
 
 func assertStringPointer(t *testing.T, name string, got *string, want string) {

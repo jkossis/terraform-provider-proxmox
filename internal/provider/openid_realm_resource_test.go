@@ -14,7 +14,9 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -237,6 +239,242 @@ func TestOpenIDRealmResourceUsesPBSFormMutationsAndPreservesClientKey(t *testing
 	}
 }
 
+func TestOpenIDRealmUpdateUsesFreshGatedDigestWithoutInterleaving(t *testing.T) {
+	firstRead := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirstRead := make(chan struct{})
+	interleaved := make(chan struct{})
+	var interleavedOnce sync.Once
+
+	var requestMu sync.Mutex
+	requestNumber := 0
+	firstPutSeen := false
+	var putDigests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestMu.Lock()
+		requestNumber++
+		currentRequest := requestNumber
+		requestMu.Unlock()
+
+		switch currentRequest {
+		case 1:
+			writeOpenIDResponse(w, `{"ticket":"ticket","CSRFPreventionToken":"csrf"}`)
+		case 2:
+			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/config/access/openid/openid" {
+				t.Errorf("unexpected first update digest read: %s %s", r.Method, r.URL.Path)
+			}
+			close(firstRead)
+			<-secondStarted
+			<-releaseFirstRead
+			writeOpenIDResponseWithDigest(w, "fresh-update-1", `{"realm":"openid","issuer-url":"https://issuer.example.com","client-id":"client-id"}`)
+		default:
+			if r.Method == http.MethodGet {
+				requestMu.Lock()
+				mutationStarted := firstPutSeen
+				requestMu.Unlock()
+				if !mutationStarted {
+					interleavedOnce.Do(func() { close(interleaved) })
+				}
+				writeOpenIDResponseWithDigest(w, "fresh-update-2", `{"realm":"openid","issuer-url":"https://issuer.example.com","client-id":"client-id"}`)
+				return
+			}
+			if r.Method != http.MethodPut || r.URL.Path != "/api2/json/config/access/openid/openid" {
+				t.Errorf("unexpected update mutation: %s %s", r.Method, r.URL.Path)
+			}
+			requestMu.Lock()
+			wantDigest := "fresh-update-1"
+			if len(putDigests) > 0 {
+				wantDigest = "fresh-update-2"
+			}
+			putDigests = append(putDigests, r.FormValue("digest"))
+			if len(putDigests) == 1 {
+				firstPutSeen = true
+			}
+			requestMu.Unlock()
+			if got := r.FormValue("digest"); got != wantDigest {
+				t.Errorf("unexpected update digest: got %q, want %q", got, wantDigest)
+			}
+			writeOpenIDResponse(w, `null`)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := newProxmoxBackupServerClient(server.URL, "root@pam", "password", false)
+	if err != nil {
+		t.Fatalf("newProxmoxBackupServerClient returned error: %s", err)
+	}
+	stateData := OpenIDRealmResourceModel{
+		Realm:         types.StringValue("openid"),
+		IssuerURL:     types.StringValue("https://issuer.example.com"),
+		ClientID:      types.StringValue("client-id"),
+		Audiences:     types.StringValue("proxmox-backup"),
+		ClientKey:     types.StringValue("client-key"),
+		Scopes:        types.StringValue(defaultOpenIDRealmScopes),
+		AutoCreate:    types.BoolValue(false),
+		UsernameClaim: types.StringValue("preferred_username"),
+		Default:       types.BoolValue(false),
+		Digest:        types.StringValue("stale-state-digest"),
+	}
+	planData := stateData
+	planData.IssuerURL = types.StringValue("https://issuer-updated.example.com")
+	plan := openIDRealmTestPlan(t, planData)
+	state := openIDRealmTestState(t, stateData)
+
+	resourceUnderTest := OpenIDRealmResource{client: client}
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(1)
+	go func() {
+		defer waitGroup.Done()
+		response := resource.UpdateResponse{State: state}
+		resourceUnderTest.Update(context.Background(), resource.UpdateRequest{Plan: plan, State: state}, &response)
+		if response.Diagnostics.HasError() {
+			t.Errorf("first update returned diagnostics: %#v", response.Diagnostics)
+		}
+	}()
+	<-firstRead
+	waitGroup.Add(1)
+	go func() {
+		defer waitGroup.Done()
+		response := resource.UpdateResponse{State: state}
+		resourceUnderTest.Update(context.Background(), resource.UpdateRequest{Plan: plan, State: state}, &response)
+		if response.Diagnostics.HasError() {
+			t.Errorf("second update returned diagnostics: %#v", response.Diagnostics)
+		}
+	}()
+	close(secondStarted)
+	select {
+	case <-interleaved:
+		t.Error("second update entered its digest read before the first update mutation")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releaseFirstRead)
+	waitGroup.Wait()
+
+	requestMu.Lock()
+	gotRequests := requestNumber
+	gotDigests := append([]string(nil), putDigests...)
+	requestMu.Unlock()
+	if got, want := gotRequests, 7; got != want {
+		t.Fatalf("unexpected update request count: got %d, want %d", got, want)
+	}
+	if want := []string{"fresh-update-1", "fresh-update-2"}; !reflect.DeepEqual(gotDigests, want) {
+		t.Fatalf("updates did not use fresh gated digests: got %#v, want %#v", gotDigests, want)
+	}
+}
+
+func TestOpenIDRealmDeleteUsesFreshGatedDigestWithoutInterleaving(t *testing.T) {
+	firstRead := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirstRead := make(chan struct{})
+	interleaved := make(chan struct{})
+	var interleavedOnce sync.Once
+
+	var requestMu sync.Mutex
+	requestNumber := 0
+	firstDeleteSeen := false
+	var deleteDigests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestMu.Lock()
+		requestNumber++
+		currentRequest := requestNumber
+		requestMu.Unlock()
+
+		switch currentRequest {
+		case 1:
+			writeOpenIDResponse(w, `{"ticket":"ticket","CSRFPreventionToken":"csrf"}`)
+		case 2:
+			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/config/access/openid/openid" {
+				t.Errorf("unexpected first delete digest read: %s %s", r.Method, r.URL.Path)
+			}
+			close(firstRead)
+			<-secondStarted
+			<-releaseFirstRead
+			writeOpenIDResponseWithDigest(w, "fresh-delete-1", `{"realm":"openid"}`)
+		default:
+			if r.Method == http.MethodGet {
+				requestMu.Lock()
+				mutationStarted := firstDeleteSeen
+				requestMu.Unlock()
+				if !mutationStarted {
+					interleavedOnce.Do(func() { close(interleaved) })
+				}
+				writeOpenIDResponseWithDigest(w, "fresh-delete-2", `{"realm":"openid"}`)
+				return
+			}
+			if r.Method != http.MethodDelete || r.URL.Path != "/api2/json/config/access/openid/openid" {
+				t.Errorf("unexpected delete mutation: %s %s", r.Method, r.URL.Path)
+			}
+			gotDigest := openIDDeleteFormValue(t, r, "digest")
+			requestMu.Lock()
+			wantDigest := "fresh-delete-1"
+			if len(deleteDigests) > 0 {
+				wantDigest = "fresh-delete-2"
+			}
+			deleteDigests = append(deleteDigests, gotDigest)
+			if len(deleteDigests) == 1 {
+				firstDeleteSeen = true
+			}
+			requestMu.Unlock()
+			if gotDigest != wantDigest {
+				t.Errorf("unexpected delete digest: got %q, want %q", gotDigest, wantDigest)
+			}
+			writeOpenIDResponse(w, `null`)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := newProxmoxBackupServerClient(server.URL, "root@pam", "password", false)
+	if err != nil {
+		t.Fatalf("newProxmoxBackupServerClient returned error: %s", err)
+	}
+	stateData := OpenIDRealmResourceModel{
+		Realm:     types.StringValue("openid"),
+		ClientKey: types.StringValue("client-key"),
+		Digest:    types.StringValue("stale-state-digest"),
+	}
+	state := openIDRealmTestState(t, stateData)
+	resourceUnderTest := OpenIDRealmResource{client: client}
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(1)
+	go func() {
+		defer waitGroup.Done()
+		response := resource.DeleteResponse{}
+		resourceUnderTest.Delete(context.Background(), resource.DeleteRequest{State: state}, &response)
+		if response.Diagnostics.HasError() {
+			t.Errorf("first delete returned diagnostics: %#v", response.Diagnostics)
+		}
+	}()
+	<-firstRead
+	waitGroup.Add(1)
+	go func() {
+		defer waitGroup.Done()
+		response := resource.DeleteResponse{}
+		resourceUnderTest.Delete(context.Background(), resource.DeleteRequest{State: state}, &response)
+		if response.Diagnostics.HasError() {
+			t.Errorf("second delete returned diagnostics: %#v", response.Diagnostics)
+		}
+	}()
+	close(secondStarted)
+	select {
+	case <-interleaved:
+		t.Error("second delete entered its digest read before the first delete mutation")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releaseFirstRead)
+	waitGroup.Wait()
+
+	requestMu.Lock()
+	gotRequests := requestNumber
+	gotDigests := append([]string(nil), deleteDigests...)
+	requestMu.Unlock()
+	if got, want := gotRequests, 5; got != want {
+		t.Fatalf("unexpected delete request count: got %d, want %d", got, want)
+	}
+	if want := []string{"fresh-delete-1", "fresh-delete-2"}; !reflect.DeepEqual(gotDigests, want) {
+		t.Fatalf("deletes did not use fresh gated digests: got %#v, want %#v", gotDigests, want)
+	}
+}
+
 func TestOpenIDRealmDeletedFieldsRepeatsPBSDeleteParameter(t *testing.T) {
 	plan := OpenIDRealmResourceModel{
 		ClientKey:  types.StringNull(),
@@ -302,11 +540,19 @@ func TestOpenIDRealmCreatePersistsRecoveryStateWhenRefreshFails(t *testing.T) {
 		case 1:
 			writeOpenIDResponse(w, `{"ticket":"ticket","CSRFPreventionToken":"csrf"}`)
 		case 2:
+			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/config/access/openid" {
+				t.Fatalf("unexpected collection digest request: %s %s", r.Method, r.URL.Path)
+			}
+			writeOpenIDResponseWithDigest(w, "create-digest", `[]`)
+		case 3:
 			if r.Method != http.MethodPost || r.URL.Path != "/api2/json/config/access/openid" {
 				t.Fatalf("unexpected create request: %s %s", r.Method, r.URL.Path)
 			}
+			if got := r.FormValue("digest"); got != "" {
+				t.Fatalf("create request unexpectedly contained digest: %q", got)
+			}
 			writeOpenIDResponse(w, `null`)
-		case 3:
+		case 4:
 			if r.Method != http.MethodGet || r.URL.Path != "/api2/json/config/access/openid/openid" {
 				t.Fatalf("unexpected refresh request: %s %s", r.Method, r.URL.Path)
 			}
@@ -350,7 +596,7 @@ func TestOpenIDRealmCreatePersistsRecoveryStateWhenRefreshFails(t *testing.T) {
 	if !response.Diagnostics.HasError() {
 		t.Fatal("expected refresh error")
 	}
-	if got, want := requestNumber, 3; got != want {
+	if got, want := requestNumber, 4; got != want {
 		t.Fatalf("unexpected request count: got %d, want %d", got, want)
 	}
 
@@ -429,6 +675,13 @@ func assertOpenIDFormValue(t *testing.T, r *http.Request, name, want string) {
 
 func assertOpenIDDeleteFormValue(t *testing.T, r *http.Request, name, want string) {
 	t.Helper()
+	if got := openIDDeleteFormValue(t, r, name); got != want {
+		t.Fatalf("unexpected delete form value %s: got %q, want %q", name, got, want)
+	}
+}
+
+func openIDDeleteFormValue(t *testing.T, r *http.Request, name string) string {
+	t.Helper()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		t.Fatalf("read delete form: %s", err)
@@ -437,9 +690,7 @@ func assertOpenIDDeleteFormValue(t *testing.T, r *http.Request, name, want strin
 	if err != nil {
 		t.Fatalf("parse delete form: %s", err)
 	}
-	if got := form.Get(name); got != want {
-		t.Fatalf("unexpected delete form value %s: got %q, want %q", name, got, want)
-	}
+	return form.Get(name)
 }
 
 func writeOpenIDResponse(w http.ResponseWriter, data string) {
@@ -474,4 +725,26 @@ func TestOpenIDRealmErrorRedactsJSONEscapedClientKey(t *testing.T) {
 	if !strings.Contains(got, "[REDACTED]") {
 		t.Fatalf("redacted error lost useful context: %q", got)
 	}
+}
+
+func openIDRealmTestPlan(t *testing.T, data OpenIDRealmResourceModel) tfsdk.Plan {
+	t.Helper()
+	var schemaResponse resource.SchemaResponse
+	NewOpenIDRealmResource().Schema(context.Background(), resource.SchemaRequest{}, &schemaResponse)
+	plan := tfsdk.Plan{Schema: schemaResponse.Schema}
+	if diags := plan.Set(context.Background(), &data); diags.HasError() {
+		t.Fatalf("setting OpenID test plan returned diagnostics: %#v", diags)
+	}
+	return plan
+}
+
+func openIDRealmTestState(t *testing.T, data OpenIDRealmResourceModel) tfsdk.State {
+	t.Helper()
+	var schemaResponse resource.SchemaResponse
+	NewOpenIDRealmResource().Schema(context.Background(), resource.SchemaRequest{}, &schemaResponse)
+	state := tfsdk.State{Schema: schemaResponse.Schema}
+	if diags := state.Set(context.Background(), &data); diags.HasError() {
+		t.Fatalf("setting OpenID test state returned diagnostics: %#v", diags)
+	}
+	return state
 }

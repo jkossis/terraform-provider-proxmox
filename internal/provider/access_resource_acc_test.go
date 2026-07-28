@@ -16,51 +16,51 @@ func TestAccAccessResources(t *testing.T) {
 	testAccPreCheck(t)
 
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
-	userid := "tfacc" + suffix + "@pbs"
+	userID := "tfacc" + suffix + "@pbs"
 	tokenName := "tfacc" + suffix
-	tokenID := userid + "!" + tokenName
+	tokenID := userID + "!" + tokenName
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: testAccAccessResourcesConfig(userid, tokenName),
+				Config: testAccAccessResourcesConfig(userID, tokenName),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("proxmox_backup_server_user.test", "userid", userid),
+					resource.TestCheckResourceAttr("proxmox_backup_server_user.test", "user_id", userID),
 					resource.TestCheckResourceAttr("proxmox_backup_server_user.test", "enable", "true"),
 					resource.TestCheckResourceAttr("proxmox_backup_server_user.test", "comment", "Terraform acceptance test user"),
 					resource.TestCheckResourceAttr("proxmox_backup_server_user_token.test", "id", tokenID),
-					resource.TestCheckResourceAttr("proxmox_backup_server_user_token.test", "userid", userid),
+					resource.TestCheckResourceAttr("proxmox_backup_server_user_token.test", "user_id", userID),
 					resource.TestCheckResourceAttr("proxmox_backup_server_user_token.test", "token_name", tokenName),
 					resource.TestCheckResourceAttr("proxmox_backup_server_user_token.test", "enable", "true"),
 					resource.TestCheckResourceAttr("proxmox_backup_server_user_token.test", "comment", "Terraform acceptance test token"),
 					resource.TestCheckResourceAttrSet("proxmox_backup_server_user_token.test", "value"),
-					resource.TestCheckResourceAttr("proxmox_backup_server_acl.user", "id", "/|"+userid+"|Audit"),
+					resource.TestCheckResourceAttr("proxmox_backup_server_acl.user", "id", "/|"+userID+"|Audit"),
 					resource.TestCheckResourceAttr("proxmox_backup_server_acl.user", "path", "/"),
-					resource.TestCheckResourceAttr("proxmox_backup_server_acl.user", "auth_id", userid),
-					resource.TestCheckResourceAttr("proxmox_backup_server_acl.user", "role", "Audit"),
+					resource.TestCheckResourceAttr("proxmox_backup_server_acl.user", "user_id", userID),
+					resource.TestCheckResourceAttr("proxmox_backup_server_acl.user", "role_id", "Audit"),
 					resource.TestCheckResourceAttr("proxmox_backup_server_acl.user", "propagate", "true"),
 					resource.TestCheckResourceAttr("proxmox_backup_server_acl.token", "id", "/|"+tokenID+"|Audit"),
 					resource.TestCheckResourceAttr("proxmox_backup_server_acl.token", "path", "/"),
-					resource.TestCheckResourceAttr("proxmox_backup_server_acl.token", "auth_id", tokenID),
-					resource.TestCheckResourceAttr("proxmox_backup_server_acl.token", "role", "Audit"),
+					resource.TestCheckResourceAttr("proxmox_backup_server_acl.token", "user_id", tokenID),
+					resource.TestCheckResourceAttr("proxmox_backup_server_acl.token", "role_id", "Audit"),
 					resource.TestCheckResourceAttr("proxmox_backup_server_acl.token", "propagate", "true"),
-					resource.TestCheckResourceAttr("data.proxmox_backup_server_user.test", "userid", userid),
+					resource.TestCheckResourceAttr("data.proxmox_backup_server_user.test", "user_id", userID),
 					resource.TestCheckResourceAttr("data.proxmox_backup_server_user.test", "enable", "true"),
 					resource.TestCheckResourceAttr("data.proxmox_backup_server_user_token.test", "id", tokenID),
 					resource.TestCheckResourceAttr("data.proxmox_backup_server_user_token.test", "enable", "true"),
-					resource.TestCheckResourceAttr("data.proxmox_backup_server_acl.user", "auth_id", userid),
-					resource.TestCheckResourceAttr("data.proxmox_backup_server_acl.user", "role", "Audit"),
-					resource.TestCheckResourceAttr("data.proxmox_backup_server_acl.token", "auth_id", tokenID),
-					resource.TestCheckResourceAttr("data.proxmox_backup_server_acl.token", "role", "Audit"),
+					resource.TestCheckResourceAttr("data.proxmox_backup_server_acl.user", "user_id", userID),
+					resource.TestCheckResourceAttr("data.proxmox_backup_server_acl.user", "role_id", "Audit"),
+					resource.TestCheckResourceAttr("data.proxmox_backup_server_acl.token", "user_id", tokenID),
+					resource.TestCheckResourceAttr("data.proxmox_backup_server_acl.token", "role_id", "Audit"),
 				),
 			},
 			{
 				ResourceName:                         "proxmox_backup_server_user.test",
 				ImportState:                          true,
-				ImportStateId:                        userid,
+				ImportStateId:                        userID,
 				ImportStateVerify:                    true,
-				ImportStateVerifyIdentifierAttribute: "userid",
+				ImportStateVerifyIdentifierAttribute: "user_id",
 			},
 			{
 				ResourceName:            "proxmox_backup_server_user_token.test",
@@ -72,7 +72,7 @@ func TestAccAccessResources(t *testing.T) {
 			{
 				ResourceName:      "proxmox_backup_server_acl.user",
 				ImportState:       true,
-				ImportStateId:     "/|" + userid + "|Audit",
+				ImportStateId:     "/|" + userID + "|Audit",
 				ImportStateVerify: true,
 			},
 			{
@@ -85,16 +85,16 @@ func TestAccAccessResources(t *testing.T) {
 	})
 }
 
-func testAccAccessResourcesConfig(userid, tokenName string) string {
+func testAccAccessResourcesConfig(userID, tokenName string) string {
 	return testAccProviderConfig() + fmt.Sprintf(`
 resource "proxmox_backup_server_user" "test" {
-  userid  = %[1]q
+  user_id = %[1]q
   enable  = true
   comment = "Terraform acceptance test user"
 }
 
 resource "proxmox_backup_server_user_token" "test" {
-  userid     = proxmox_backup_server_user.test.userid
+  user_id    = proxmox_backup_server_user.test.user_id
   token_name = %[2]q
   enable     = true
   comment    = "Terraform acceptance test token"
@@ -102,35 +102,35 @@ resource "proxmox_backup_server_user_token" "test" {
 
 resource "proxmox_backup_server_acl" "user" {
   path    = "/"
-  auth_id = proxmox_backup_server_user.test.userid
-  role    = "Audit"
+  user_id = proxmox_backup_server_user.test.user_id
+  role_id = "Audit"
 }
 
 resource "proxmox_backup_server_acl" "token" {
   path    = "/"
-  auth_id = proxmox_backup_server_user_token.test.id
-  role    = "Audit"
+  user_id = proxmox_backup_server_user_token.test.id
+  role_id = "Audit"
 }
 
 data "proxmox_backup_server_user" "test" {
-  userid = proxmox_backup_server_user.test.userid
+  user_id = proxmox_backup_server_user.test.user_id
 }
 
 data "proxmox_backup_server_user_token" "test" {
-  userid     = proxmox_backup_server_user_token.test.userid
+  user_id    = proxmox_backup_server_user_token.test.user_id
   token_name = proxmox_backup_server_user_token.test.token_name
 }
 
 data "proxmox_backup_server_acl" "user" {
   path    = proxmox_backup_server_acl.user.path
-  auth_id = proxmox_backup_server_acl.user.auth_id
-  role    = proxmox_backup_server_acl.user.role
+  user_id = proxmox_backup_server_acl.user.user_id
+  role_id = proxmox_backup_server_acl.user.role_id
 }
 
 data "proxmox_backup_server_acl" "token" {
   path    = proxmox_backup_server_acl.token.path
-  auth_id = proxmox_backup_server_acl.token.auth_id
-  role    = proxmox_backup_server_acl.token.role
+  user_id = proxmox_backup_server_acl.token.user_id
+  role_id = proxmox_backup_server_acl.token.role_id
 }
-`, userid, tokenName)
+`, userID, tokenName)
 }

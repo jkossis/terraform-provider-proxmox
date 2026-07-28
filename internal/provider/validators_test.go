@@ -8,7 +8,11 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	datasourceschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	resourceschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
@@ -17,6 +21,8 @@ func TestS3EndpointValidator(t *testing.T) {
 	tests := map[string]bool{
 		"garage":             false,
 		"192.0.2.10":         false,
+		"2001:db8::10":       false,
+		"[2001:db8::10]":     false,
 		"http://garage:3900": true,
 		"garage:3900":        true,
 		"garage/path":        true,
@@ -99,6 +105,58 @@ func TestOpenIDCommentValidator(t *testing.T) {
 			}, &resp)
 			if resp.Diagnostics.HasError() {
 				t.Fatalf("unexpected diagnostics: %#v", resp.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestACLUGIDTypeValidation(t *testing.T) {
+	var resourceSchemaResponse resource.SchemaResponse
+	NewACLResource().Schema(context.Background(), resource.SchemaRequest{}, &resourceSchemaResponse)
+	resourceAttribute, ok := resourceSchemaResponse.Schema.Attributes["ugid_type"].(resourceschema.StringAttribute)
+	if !ok {
+		t.Fatal("ACL resource ugid_type is not a string attribute")
+	}
+
+	var dataSourceSchemaResponse datasource.SchemaResponse
+	NewACLDataSource().Schema(context.Background(), datasource.SchemaRequest{}, &dataSourceSchemaResponse)
+	dataSourceAttribute, ok := dataSourceSchemaResponse.Schema.Attributes["ugid_type"].(datasourceschema.StringAttribute)
+	if !ok {
+		t.Fatal("ACL data source ugid_type is not a string attribute")
+	}
+
+	for name, validators := range map[string][]validator.String{
+		"resource":    resourceAttribute.Validators,
+		"data source": dataSourceAttribute.Validators,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if len(validators) == 0 {
+				t.Fatal("ugid_type has no validators")
+			}
+			for _, value := range []string{"invalid", "token"} {
+				for _, validatorUnderTest := range validators {
+					var resp validator.StringResponse
+					validatorUnderTest.ValidateString(context.Background(), validator.StringRequest{
+						Path:        path.Root("ugid_type"),
+						ConfigValue: types.StringValue(value),
+					}, &resp)
+					if !resp.Diagnostics.HasError() {
+						t.Fatalf("invalid ACL subject type %q produced no diagnostics", value)
+					}
+				}
+			}
+
+			for _, value := range []string{"user", "group"} {
+				for _, validatorUnderTest := range validators {
+					var resp validator.StringResponse
+					validatorUnderTest.ValidateString(context.Background(), validator.StringRequest{
+						Path:        path.Root("ugid_type"),
+						ConfigValue: types.StringValue(value),
+					}, &resp)
+					if resp.Diagnostics.HasError() {
+						t.Fatalf("valid ACL subject type %q produced diagnostics: %#v", value, resp.Diagnostics)
+					}
+				}
 			}
 		})
 	}

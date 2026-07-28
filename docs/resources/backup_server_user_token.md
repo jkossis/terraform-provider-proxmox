@@ -3,18 +3,18 @@
 page_title: "proxmox_backup_server_user_token Resource - proxmox"
 subcategory: ""
 description: |-
-  Manages a Proxmox Backup Server user API token via /access/users/{userid}/token/{token_name}.
+  Manages a Proxmox Backup Server user API token via /access/users/{user_id}/token/{token_name}.
 ---
 
 # proxmox_backup_server_user_token (Resource)
 
-Manages a Proxmox Backup Server user API token via `/access/users/{userid}/token/{token_name}`.
+Manages a Proxmox Backup Server user API token via `/access/users/{user_id}/token/{token_name}`.
 
 ## Example Usage
 
 ```terraform
 resource "proxmox_backup_server_user_token" "example" {
-  userid     = proxmox_backup_server_user.example.userid
+  user_id    = proxmox_backup_server_user.example.user_id
   token_name = "homepage"
   enable     = true
 }
@@ -26,16 +26,18 @@ resource "proxmox_backup_server_user_token" "example" {
 ### Required
 
 - `token_name` (String) Token name.
-- `userid` (String) Proxmox Backup Server user ID that owns the token.
+- `user_id` (String) Proxmox Backup Server user ID that owns the token.
 
 ### Optional
 
 - `comment` (String) Token comment.
 - `enable` (Boolean) Whether the token is enabled.
+- `expire` (Number) Token expiration time as epoch seconds. A value of `0` means no expiration.
+- `regenerate` (Boolean) Regenerate the token secret on a false-to-true transition. Set this to `false` and apply before setting it to `true` again.
 
 ### Read-Only
 
-- `id` (String) Token auth ID in `userid!token_name` format.
+- `id` (String) Token auth ID in `user_id!token_name` format.
 - `value` (String, Sensitive) Token secret value. Proxmox Backup Server only returns this during token creation.
 
 ## Import
