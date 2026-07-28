@@ -43,6 +43,31 @@ type int64RangeValidator struct {
 	description string
 }
 
+type openIDCommentValidator struct{}
+
+func (v openIDCommentValidator) Description(ctx context.Context) string {
+	return "comment must be non-empty and must not have leading or trailing whitespace"
+}
+
+func (v openIDCommentValidator) MarkdownDescription(ctx context.Context) string {
+	return "comment must be non-empty and must not have leading or trailing whitespace"
+}
+
+func (v openIDCommentValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	value := req.ConfigValue.ValueString()
+	if value == "" || strings.TrimSpace(value) == "" || strings.TrimSpace(value) != value {
+		resp.Diagnostics.AddAttributeError(
+			req.Path,
+			"Invalid OpenID Realm Comment",
+			"Comment must be non-empty and must not have leading or trailing whitespace.",
+		)
+	}
+}
+
 func (v int64RangeValidator) Description(ctx context.Context) string {
 	return v.description
 }

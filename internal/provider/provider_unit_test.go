@@ -192,6 +192,7 @@ func TestProviderResources_preservePublicTypeNames(t *testing.T) {
 	want := []string{
 		"proxmox_backup_server_acl",
 		"proxmox_backup_server_datastore",
+		"proxmox_backup_server_realm_openid",
 		"proxmox_backup_server_s3_config",
 		"proxmox_backup_server_user",
 		"proxmox_backup_server_user_token",

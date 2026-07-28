@@ -62,6 +62,48 @@ func TestInt64RangeValidator(t *testing.T) {
 	}
 }
 
+func TestOpenIDCommentValidator(t *testing.T) {
+	tests := map[string]bool{
+		"Managed by Terraform":        false,
+		"internal spaces are allowed": false,
+		"":                            true,
+		"   ":                         true,
+		" leading":                    true,
+		"trailing ":                   true,
+		"\tcomment":                   true,
+	}
+
+	for value, wantError := range tests {
+		t.Run(value, func(t *testing.T) {
+			var resp validator.StringResponse
+			openIDCommentValidator{}.ValidateString(context.Background(), validator.StringRequest{
+				Path:        path.Root("comment"),
+				ConfigValue: types.StringValue(value),
+			}, &resp)
+
+			if gotError := resp.Diagnostics.HasError(); gotError != wantError {
+				t.Fatalf("unexpected diagnostics error state: got %t, want %t", gotError, wantError)
+			}
+		})
+	}
+
+	for name, value := range map[string]types.String{
+		"null":    types.StringNull(),
+		"unknown": types.StringUnknown(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var resp validator.StringResponse
+			openIDCommentValidator{}.ValidateString(context.Background(), validator.StringRequest{
+				Path:        path.Root("comment"),
+				ConfigValue: value,
+			}, &resp)
+			if resp.Diagnostics.HasError() {
+				t.Fatalf("unexpected diagnostics: %#v", resp.Diagnostics)
+			}
+		})
+	}
+}
+
 func TestStringListAllowedValuesValidator(t *testing.T) {
 	validatorUnderTest := stringListAllowedValuesValidator{allowed: map[string]struct{}{
 		"skip-if-none-match-header": {},

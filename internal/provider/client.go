@@ -31,7 +31,8 @@ type proxmoxBackupServerClient struct {
 }
 
 type proxmoxBackupServerResponse struct {
-	Data json.RawMessage `json:"data"`
+	Data   json.RawMessage `json:"data"`
+	Digest *string         `json:"digest"`
 }
 
 type proxmoxBackupServerTicketResponse struct {
@@ -163,8 +164,24 @@ func (c *proxmoxBackupServerClient) put(ctx context.Context, path string, body a
 	return c.do(ctx, http.MethodPut, path, body, nil)
 }
 
+func (c *proxmoxBackupServerClient) postForm(ctx context.Context, path string, form url.Values, out any) error {
+	return c.doForm(ctx, http.MethodPost, path, form, out)
+}
+
+func (c *proxmoxBackupServerClient) putForm(ctx context.Context, path string, form url.Values) error {
+	return c.doForm(ctx, http.MethodPut, path, form, nil)
+}
+
+func (c *proxmoxBackupServerClient) deleteForm(ctx context.Context, path string, form url.Values) error {
+	return c.doForm(ctx, http.MethodDelete, path, form, nil)
+}
+
 func (c *proxmoxBackupServerClient) delete(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodDelete, path, nil, nil)
+}
+
+func (c *proxmoxBackupServerClient) getWithDigest(ctx context.Context, path string, out any) (*string, error) {
+	return c.doWithDigest(ctx, http.MethodGet, path, out)
 }
 
 func (c *proxmoxBackupServerClient) certificateFingerprint(ctx context.Context) (string, error) {
@@ -330,13 +347,65 @@ func (c *proxmoxBackupServerClient) do(ctx context.Context, method, path string,
 	return decodeProxmoxBackupServerResponse(resp, out)
 }
 
+func (c *proxmoxBackupServerClient) doWithDigest(ctx context.Context, method, path string, out any) (*string, error) {
+	if err := c.authenticate(ctx); err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+"/api2/json"+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.AddCookie(c.authCookie)
+	if method != http.MethodGet {
+		req.Header.Set("CSRFPreventionToken", c.csrfPreventionToken)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	return decodeProxmoxBackupServerResponseWithDigest(resp, out)
+}
+
+func (c *proxmoxBackupServerClient) doForm(ctx context.Context, method, path string, form url.Values, out any) error {
+	if err := c.authenticate(ctx); err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+"/api2/json"+path, strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.AddCookie(c.authCookie)
+	if method != http.MethodGet {
+		req.Header.Set("CSRFPreventionToken", c.csrfPreventionToken)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	return decodeProxmoxBackupServerResponse(resp, out)
+}
+
 func decodeProxmoxBackupServerResponse(resp *http.Response, out any) error {
+	_, err := decodeProxmoxBackupServerResponseWithDigest(resp, out)
+	return err
+}
+
+func decodeProxmoxBackupServerResponseWithDigest(resp *http.Response, out any) (*string, error) {
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("read response body: %w", err)
+		return nil, fmt.Errorf("read response body: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return &proxmoxBackupServerAPIError{
+		return nil, &proxmoxBackupServerAPIError{
 			method: resp.Request.Method,
 			path:   resp.Request.URL.Path,
 			status: resp.Status,
@@ -345,19 +414,19 @@ func decodeProxmoxBackupServerResponse(resp *http.Response, out any) error {
 		}
 	}
 	if out == nil || len(responseBody) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var wrapped proxmoxBackupServerResponse
 	if err := json.Unmarshal(responseBody, &wrapped); err != nil {
-		return fmt.Errorf("decode response wrapper: %w", err)
+		return nil, fmt.Errorf("decode response wrapper: %w", err)
 	}
 	if len(wrapped.Data) == 0 || string(wrapped.Data) == "null" {
-		return nil
+		return wrapped.Digest, nil
 	}
 	if err := json.Unmarshal(wrapped.Data, out); err != nil {
-		return fmt.Errorf("decode response data: %w", err)
+		return nil, fmt.Errorf("decode response data: %w", err)
 	}
 
-	return nil
+	return wrapped.Digest, nil
 }

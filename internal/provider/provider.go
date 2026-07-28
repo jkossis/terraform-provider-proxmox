@@ -230,6 +230,7 @@ func (p *ProxmoxBackupServerProvider) Resources(ctx context.Context) []func() re
 	return []func() resource.Resource{
 		NewACLResource,
 		NewDatastoreResource,
+		NewOpenIDRealmResource,
 		NewS3ConfigResource,
 		NewUserResource,
 		NewUserTokenResource,

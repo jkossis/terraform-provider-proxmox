@@ -70,6 +70,19 @@ type userTokenAPIModel struct {
 	Value     string                   `json:"value,omitempty"`
 }
 
+type openIDRealmAPIModel struct {
+	Realm         string                   `json:"realm"`
+	IssuerURL     string                   `json:"issuer-url"`
+	ClientID      string                   `json:"client-id"`
+	ClientKey     *string                  `json:"client-key,omitempty"`
+	Scopes        *string                  `json:"scopes,omitempty"`
+	ACRValues     *string                  `json:"acr-values,omitempty"`
+	Prompt        *string                  `json:"prompt,omitempty"`
+	Comment       *string                  `json:"comment,omitempty"`
+	AutoCreate    *proxmoxBackupServerBool `json:"autocreate,omitempty"`
+	UsernameClaim *string                  `json:"username-claim,omitempty"`
+}
+
 func accessBoolPointerValue(value *proxmoxBackupServerBool) types.Bool {
 	if value == nil {
 		return types.BoolValue(true)
