@@ -58,6 +58,12 @@ In order to run the full suite of acceptance tests, set `PROXMOX_ENDPOINT`, `PRO
 
 Datastore acceptance tests also require `PROXMOX_BACKUP_SERVER_TEST_DATASTORE_PATH_PREFIX`. Import datastores by name, for example: `terraform import proxmox_backup_server_datastore.example backup`.
 
+Verification-job acceptance tests require `PROXMOX_BACKUP_SERVER_TEST_VERIFY_DATASTORE`
+to name an existing datastore. They create a uniquely named job with a schedule
+in 2099, test import and removal of optional settings, then delete the job.
+They do not start verification or alter backup data. Credentials may be supplied
+through the shell or ignored `mise.local.toml`.
+
 S3 configuration acceptance tests run only when `PROXMOX_BACKUP_SERVER_TEST_S3_ENDPOINT`, `PROXMOX_BACKUP_SERVER_TEST_S3_ACCESS_KEY`, and `PROXMOX_BACKUP_SERVER_TEST_S3_SECRET_KEY` are set. Optional S3 variables are `PROXMOX_BACKUP_SERVER_TEST_S3_PORT`, `PROXMOX_BACKUP_SERVER_TEST_S3_REGION`, and `PROXMOX_BACKUP_SERVER_TEST_S3_FINGERPRINT`.
 
 *Note:* Acceptance tests create real resources, and often cost money to run.
