@@ -234,6 +234,7 @@ func (p *ProxmoxBackupServerProvider) Resources(ctx context.Context) []func() re
 		NewS3ConfigResource,
 		NewUserResource,
 		NewUserTokenResource,
+		NewVerifyJobResource,
 	}
 }
 

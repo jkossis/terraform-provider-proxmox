@@ -196,6 +196,7 @@ func TestProviderResources_preservePublicTypeNames(t *testing.T) {
 		"proxmox_backup_server_s3_config",
 		"proxmox_backup_server_user",
 		"proxmox_backup_server_user_token",
+		"proxmox_backup_server_verify_job",
 	}
 
 	if !reflect.DeepEqual(got, want) {

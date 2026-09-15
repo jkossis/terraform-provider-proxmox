@@ -1,0 +1,1 @@
+terraform import proxmox_backup_server_verify_job.daily daily
