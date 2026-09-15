@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 )
 
 func TestAccDatastoreResource(t *testing.T) {
@@ -55,6 +56,11 @@ func TestAccDatastoreResource(t *testing.T) {
 			},
 			{
 				Config: testAccDatastoreResourceConfig(datastoreName, datastorePath, false),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(resourceName, plancheck.ResourceActionUpdate),
+					},
+				},
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr(resourceName, "name", datastoreName),
 					resource.TestCheckResourceAttr(resourceName, "path", datastorePath),

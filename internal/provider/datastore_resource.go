@@ -85,13 +85,14 @@ func (r *DatastoreResource) Metadata(ctx context.Context, req resource.MetadataR
 
 func (r *DatastoreResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	replace := []planmodifier.String{stringplanmodifier.RequiresReplace()}
+	replaceIfConfigured := []planmodifier.String{stringplanmodifier.RequiresReplaceIfConfigured()}
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Manages a Proxmox Backup Server datastore configuration via `/config/datastore`.",
 		Attributes: map[string]schema.Attribute{
 			"name":                    schema.StringAttribute{MarkdownDescription: "Datastore name.", Required: true, PlanModifiers: replace},
 			"path":                    schema.StringAttribute{MarkdownDescription: "Absolute path to the datastore directory, or relative on-device path for removable datastores.", Required: true, PlanModifiers: replace},
-			"backend":                 schema.StringAttribute{MarkdownDescription: "Datastore backend config.", Optional: true, Computed: true, PlanModifiers: replace},
-			"backing_device":          schema.StringAttribute{MarkdownDescription: "UUID of the filesystem partition for removable datastores.", Optional: true, Computed: true, PlanModifiers: replace},
+			"backend":                 schema.StringAttribute{MarkdownDescription: "Datastore backend config.", Optional: true, Computed: true, PlanModifiers: replaceIfConfigured},
+			"backing_device":          schema.StringAttribute{MarkdownDescription: "UUID of the filesystem partition for removable datastores.", Optional: true, Computed: true, PlanModifiers: replaceIfConfigured},
 			"comment":                 schema.StringAttribute{MarkdownDescription: "Comment.", Optional: true},
 			"gc_schedule":             schema.StringAttribute{MarkdownDescription: "Run garbage collection job at the specified calendar event schedule.", Optional: true},
 			"gc_on_unmount":           schema.BoolAttribute{MarkdownDescription: "Run garbage collection before unmounting a removable datastore.", Optional: true},
