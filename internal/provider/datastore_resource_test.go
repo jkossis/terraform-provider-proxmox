@@ -13,9 +13,58 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
+
+func TestDatastoreComputedFieldsDoNotReplaceUnconfiguredBackends(t *testing.T) {
+	ctx := context.Background()
+	var resourceSchema resource.SchemaResponse
+	(&DatastoreResource{}).Schema(ctx, resource.SchemaRequest{}, &resourceSchema)
+	existing := tftypes.NewValue(tftypes.Object{}, map[string]tftypes.Value{})
+	cases := []struct {
+		name                string
+		config, state, plan types.String
+		replace             bool
+	}{
+		{"omitted and absent", types.StringNull(), types.StringNull(), types.StringUnknown(), false},
+		{"omitted and discovered", types.StringNull(), types.StringValue("old"), types.StringUnknown(), false},
+		{"unchanged", types.StringValue("old"), types.StringValue("old"), types.StringValue("old"), false},
+		{"changed", types.StringValue("new"), types.StringValue("old"), types.StringValue("new"), true},
+		{"newly configured", types.StringValue("new"), types.StringNull(), types.StringValue("new"), true},
+		{"configured unknown", types.StringUnknown(), types.StringValue("old"), types.StringUnknown(), true},
+	}
+	for _, field := range []string{"backend", "backing_device"} {
+		attribute, ok := resourceSchema.Schema.Attributes[field].(schema.StringAttribute)
+		if !ok {
+			t.Fatalf("%s is not a string attribute", field)
+		}
+		for _, tc := range cases {
+			t.Run(field+"/"+tc.name, func(t *testing.T) {
+				req := planmodifier.StringRequest{
+					ConfigValue: tc.config, StateValue: tc.state, PlanValue: tc.plan,
+					State: tfsdk.State{Raw: existing}, Plan: tfsdk.Plan{Raw: existing},
+				}
+				replace := false
+				for _, modifier := range attribute.PlanModifiers {
+					resp := planmodifier.StringResponse{PlanValue: req.PlanValue}
+					modifier.PlanModifyString(ctx, req, &resp)
+					if resp.Diagnostics.HasError() {
+						t.Fatal(resp.Diagnostics)
+					}
+					req.PlanValue = resp.PlanValue
+					replace = replace || resp.RequiresReplace
+				}
+				if replace != tc.replace {
+					t.Fatalf("replacement = %t, want %t", replace, tc.replace)
+				}
+			})
+		}
+	}
+}
 
 func TestDatastorePayloadIncludesOptionalFields(t *testing.T) {
 	data := DatastoreResourceModel{
@@ -461,6 +510,9 @@ func TestDatastoreUpdateUsesFreshDigest(t *testing.T) {
 			}
 			if got := r.FormValue("digest"); got != "fresh-digest" {
 				t.Fatalf("unexpected update digest: got %q", got)
+			}
+			if r.Form.Has("name") {
+				t.Fatal("update form must not repeat the name from the request path")
 			}
 			writeDatastoreResponse(w, `null`)
 		case 4:

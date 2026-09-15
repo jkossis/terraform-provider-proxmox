@@ -3,3 +3,8 @@
 FEATURES:
 
 - Add `proxmox_backup_server_verify_job` to manage native PBS verification schedules, recheck intervals, namespace scope, and thread settings through `/config/verify`.
+
+BUG FIXES:
+
+- Keep datastore updates in place when optional computed backend fields are omitted; explicit backend changes still require replacement.
+- Omit the datastore name from update forms because it is already supplied by the API path.
