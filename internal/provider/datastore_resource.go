@@ -307,7 +307,6 @@ func datastorePayload(data DatastoreResourceModel) datastoreAPIModel {
 
 func datastoreForm(payload datastoreAPIModel) url.Values {
 	form := url.Values{}
-	form.Set("name", payload.Name)
 	setStringFormValue(form, "path", payload.Path)
 	setStringFormPointer(form, "backend", payload.Backend)
 	setStringFormPointer(form, "backing-device", payload.BackingDevice)

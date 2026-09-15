@@ -511,6 +511,9 @@ func TestDatastoreUpdateUsesFreshDigest(t *testing.T) {
 			if got := r.FormValue("digest"); got != "fresh-digest" {
 				t.Fatalf("unexpected update digest: got %q", got)
 			}
+			if r.Form.Has("name") {
+				t.Fatal("update form must not repeat the name from the request path")
+			}
 			writeDatastoreResponse(w, `null`)
 		case 4:
 			writeDatastoreResponse(w, `{"name":"backup","path":"/mnt/datastore/backup","comment":"updated"}`)

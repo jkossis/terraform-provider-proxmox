@@ -38,19 +38,11 @@ func TestAccDatastoreResource(t *testing.T) {
 					resource.TestCheckResourceAttr(resourceName, "path", datastorePath),
 					resource.TestCheckResourceAttr(resourceName, "comment", "Terraform acceptance test"),
 					resource.TestCheckResourceAttr(resourceName, "gc_schedule", "daily"),
-					resource.TestCheckResourceAttr(resourceName, "prune_schedule", "daily"),
-					resource.TestCheckResourceAttr(resourceName, "keep_daily", "7"),
-					resource.TestCheckResourceAttr(resourceName, "keep_weekly", "4"),
-					resource.TestCheckResourceAttr(resourceName, "keep_monthly", "6"),
 					resource.TestCheckResourceAttr(resourceName, "verify_new", "true"),
 					resource.TestCheckResourceAttr(dataSourceName, "name", datastoreName),
 					resource.TestCheckResourceAttr(dataSourceName, "path", datastorePath),
 					resource.TestCheckResourceAttr(dataSourceName, "comment", "Terraform acceptance test"),
 					resource.TestCheckResourceAttr(dataSourceName, "gc_schedule", "daily"),
-					resource.TestCheckResourceAttr(dataSourceName, "prune_schedule", "daily"),
-					resource.TestCheckResourceAttr(dataSourceName, "keep_daily", "7"),
-					resource.TestCheckResourceAttr(dataSourceName, "keep_weekly", "4"),
-					resource.TestCheckResourceAttr(dataSourceName, "keep_monthly", "6"),
 					resource.TestCheckResourceAttr(dataSourceName, "verify_new", "true"),
 				),
 			},
@@ -66,10 +58,6 @@ func TestAccDatastoreResource(t *testing.T) {
 					resource.TestCheckResourceAttr(resourceName, "path", datastorePath),
 					resource.TestCheckResourceAttr(resourceName, "comment", "Terraform acceptance test updated"),
 					resource.TestCheckNoResourceAttr(resourceName, "gc_schedule"),
-					resource.TestCheckNoResourceAttr(resourceName, "prune_schedule"),
-					resource.TestCheckNoResourceAttr(resourceName, "keep_daily"),
-					resource.TestCheckNoResourceAttr(resourceName, "keep_weekly"),
-					resource.TestCheckNoResourceAttr(resourceName, "keep_monthly"),
 					resource.TestCheckNoResourceAttr(resourceName, "verify_new"),
 				),
 			},
@@ -79,7 +67,6 @@ func TestAccDatastoreResource(t *testing.T) {
 				ImportStateId:                        datastoreName,
 				ImportStateVerify:                    true,
 				ImportStateVerifyIdentifierAttribute: "name",
-				ImportStateVerifyIgnore:              []string{"reuse_datastore"},
 			},
 		},
 	})
@@ -88,20 +75,15 @@ func TestAccDatastoreResource(t *testing.T) {
 func testAccDatastoreResourceConfig(name, datastorePath string, includeOptional bool) string {
 	config := testAccProviderConfig() + fmt.Sprintf(`
 resource "proxmox_backup_server_datastore" "test" {
-  name            = %[1]q
-  path            = %[2]q
-  reuse_datastore = true
+  name = %[1]q
+  path = %[2]q
 `, name, datastorePath)
 
 	if includeOptional {
 		config += `
-  comment        = "Terraform acceptance test"
-  gc_schedule    = "daily"
-  prune_schedule = "daily"
-  keep_daily     = 7
-  keep_weekly    = 4
-  keep_monthly   = 6
-  verify_new     = true
+  comment     = "Terraform acceptance test"
+  gc_schedule = "daily"
+  verify_new  = true
 `
 	} else {
 		config += `
