@@ -55,6 +55,7 @@ type userAPIModel struct {
 	Firstname *string                  `json:"firstname,omitempty"`
 	Lastname  *string                  `json:"lastname,omitempty"`
 	Expire    *int64                   `json:"expire,omitempty"`
+	Password  *string                  `json:"password,omitempty"` // Write-only: never returned by the API.
 	Digest    *string                  `json:"digest,omitempty"`
 	Delete    []string                 `json:"delete,omitempty"`
 }

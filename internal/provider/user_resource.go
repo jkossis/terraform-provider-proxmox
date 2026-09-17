@@ -38,6 +38,7 @@ type UserResourceModel struct {
 	Firstname types.String `tfsdk:"first_name"`
 	Lastname  types.String `tfsdk:"last_name"`
 	Expire    types.Int64  `tfsdk:"expire"`
+	Password  types.String `tfsdk:"password"`
 }
 
 func (r *UserResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -82,6 +83,11 @@ func (r *UserResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:            true,
 				Computed:            true,
 				Default:             int64default.StaticInt64(0),
+			},
+			"password": schema.StringAttribute{
+				MarkdownDescription: "User password, for `pbs` realm users. Sent on create and whenever the value changes. Proxmox Backup Server never returns it, so Terraform preserves the configured value; removing it from the configuration leaves the stored password untouched.",
+				Optional:            true,
+				Sensitive:           true,
 			},
 		},
 	}
@@ -155,6 +161,9 @@ func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return r.readUserDigest(ctx, plan.UserID.ValueString())
 	}, func(ctx context.Context, digest *string) error {
 		payload := userPayload(plan)
+		if !userPasswordChanged(plan, state) {
+			payload.Password = nil
+		}
 		payload.Delete = deleted
 		payload.Digest = digest
 		return r.client.put(ctx, "/access/users/"+urlPathEscape(plan.UserID.ValueString()), payload)
@@ -201,6 +210,7 @@ func (r *UserResource) ImportState(ctx context.Context, req resource.ImportState
 }
 
 func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) error {
+	configuredPassword := data.Password
 	var apiData userAPIModel
 	if err := r.client.get(ctx, "/access/users/"+urlPathEscape(data.UserID.ValueString()), &apiData); err != nil {
 		return err
@@ -212,6 +222,8 @@ func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) er
 	data.Firstname = accessStringValue(apiData.Firstname)
 	data.Lastname = accessStringValue(apiData.Lastname)
 	data.Expire = accessInt64Value(apiData.Expire)
+	// The API never returns the password. Never copy an API value into state.
+	data.Password = configuredPassword
 	return nil
 }
 
@@ -224,7 +236,18 @@ func userPayload(data UserResourceModel) userAPIModel {
 		Firstname: accessStringPointer(data.Firstname),
 		Lastname:  accessStringPointer(data.Lastname),
 		Expire:    accessInt64Pointer(data.Expire),
+		Password:  accessStringPointer(data.Password),
 	}
+}
+
+// userPasswordChanged reports whether the plan carries a password that differs
+// from the one in state. A password dropped from the configuration is not a
+// change: the API has no way to unset it.
+func userPasswordChanged(plan, state UserResourceModel) bool {
+	if plan.Password.IsNull() || plan.Password.IsUnknown() {
+		return false
+	}
+	return state.Password.IsNull() || state.Password.IsUnknown() || plan.Password.ValueString() != state.Password.ValueString()
 }
 
 func (r *UserResource) readUsersDigest(ctx context.Context) (*string, error) {
@@ -275,6 +298,9 @@ func userRecoveryState(data UserResourceModel) UserResourceModel {
 	}
 	if recovery.Expire.IsUnknown() {
 		recovery.Expire = types.Int64Null()
+	}
+	if recovery.Password.IsUnknown() {
+		recovery.Password = types.StringNull()
 	}
 	return recovery
 }

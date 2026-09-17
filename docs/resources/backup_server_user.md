@@ -14,8 +14,9 @@ Manages a Proxmox Backup Server user via `/access/users`.
 
 ```terraform
 resource "proxmox_backup_server_user" "example" {
-  user_id = "homepage@pbs"
-  enable  = true
+  user_id  = "homepage@pbs"
+  enable   = true
+  password = var.homepage_password
 }
 ```
 
@@ -34,6 +35,7 @@ resource "proxmox_backup_server_user" "example" {
 - `expire` (Number) Account expiration time as epoch seconds. A value of `0` means no expiration.
 - `first_name` (String) User first name.
 - `last_name` (String) User last name.
+- `password` (String, Sensitive) User password, for `pbs` realm users. Sent on create and whenever the value changes. Proxmox Backup Server never returns it, so Terraform preserves the configured value; removing it from the configuration leaves the stored password untouched.
 
 ## Import
 

@@ -1,4 +1,5 @@
 resource "proxmox_backup_server_user" "example" {
-  user_id = "homepage@pbs"
-  enable  = true
+  user_id  = "homepage@pbs"
+  enable   = true
+  password = var.homepage_password
 }
