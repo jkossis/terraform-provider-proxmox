@@ -134,6 +134,83 @@ func TestUserUpdateUsesFreshDigestAndRepeatedDeletes(t *testing.T) {
 	}
 }
 
+func TestUserUpdateSendsPasswordOnlyWhenChangedAndKeepsItAfterRefresh(t *testing.T) {
+	for name, tc := range map[string]struct {
+		statePassword types.String
+		planPassword  types.String
+		wantSent      bool
+	}{
+		"changed password is sent":         {statePassword: types.StringValue("old-pass"), planPassword: types.StringValue("new-pass"), wantSent: true},
+		"unchanged password is not resent": {statePassword: types.StringValue("same-pass"), planPassword: types.StringValue("same-pass"), wantSent: false},
+		"dropped password is not unset":    {statePassword: types.StringValue("old-pass"), planPassword: types.StringNull(), wantSent: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			requestNumber := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestNumber++
+				switch requestNumber {
+				case 1:
+					writeAccessTestResponse(w, `{"ticket":"ticket","CSRFPreventionToken":"csrf"}`)
+				case 2:
+					writeAccessTestResponseWithDigest(w, `{"userid":"alice@pbs"}`)
+				case 3:
+					if r.Method != http.MethodPut || r.URL.Path != "/api2/json/access/users/alice@pbs" {
+						t.Fatalf("unexpected user update: %s %s", r.Method, r.URL.Path)
+					}
+					var payload map[string]any
+					body, _ := io.ReadAll(r.Body)
+					if err := json.Unmarshal(body, &payload); err != nil {
+						t.Fatalf("decode update payload: %s", err)
+					}
+					sent, ok := payload["password"]
+					if ok != tc.wantSent {
+						t.Fatalf("password sent = %t (%#v), want %t", ok, sent, tc.wantSent)
+					}
+					if tc.wantSent && sent != tc.planPassword.ValueString() {
+						t.Fatalf("unexpected password in payload: %#v", sent)
+					}
+					writeAccessTestResponse(w, `null`)
+				case 4:
+					// The API never echoes the password back.
+					writeAccessTestResponse(w, `{"userid":"alice@pbs","comment":"comment","expire":0}`)
+				default:
+					t.Fatalf("unexpected request %d: %s %s", requestNumber, r.Method, r.URL.Path)
+				}
+			}))
+			t.Cleanup(server.Close)
+
+			client, err := newProxmoxBackupServerClient(server.URL, "root@pam", "password", false)
+			if err != nil {
+				t.Fatalf("newProxmoxBackupServerClient returned error: %s", err)
+			}
+			stateData := UserResourceModel{
+				UserID: types.StringValue("alice@pbs"), Enable: types.BoolValue(true),
+				Comment: types.StringValue("comment"), Expire: types.Int64Value(0), Password: tc.statePassword,
+			}
+			planData := stateData
+			planData.Password = tc.planPassword
+			plan := accessUserPlan(t, planData)
+			state := tfsdk.State(plan)
+			if diags := state.Set(context.Background(), &stateData); diags.HasError() {
+				t.Fatalf("setting user state returned diagnostics: %#v", diags)
+			}
+			response := resource.UpdateResponse{State: state}
+			resourceUnderTest := UserResource{client: client}
+			resourceUnderTest.Update(context.Background(), resource.UpdateRequest{Plan: plan, State: state}, &response)
+			if response.Diagnostics.HasError() {
+				t.Fatalf("unexpected update diagnostics: %#v", response.Diagnostics)
+			}
+			var persisted UserResourceModel
+			if diags := response.State.Get(context.Background(), &persisted); diags.HasError() {
+				t.Fatalf("reading persisted state returned diagnostics: %#v", diags)
+			}
+			if !persisted.Password.Equal(tc.planPassword) {
+				t.Fatalf("persisted password = %#v, want the configured %#v", persisted.Password, tc.planPassword)
+			}
+		})
+	}
+}
+
 func TestUserTokenCreatePreservesOneTimeSecretBeforeRefresh(t *testing.T) {
 	requestNumber := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

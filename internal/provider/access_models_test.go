@@ -96,6 +96,51 @@ func TestUserDeletedFieldsUsesRepeatedDeleteValues(t *testing.T) {
 	}
 }
 
+func TestUserPayloadCarriesPasswordOnlyWhenConfigured(t *testing.T) {
+	withPassword := userPayload(UserResourceModel{
+		UserID:   types.StringValue("alice@pbs"),
+		Password: types.StringValue("s3cret-pass"),
+	})
+	if withPassword.Password == nil || *withPassword.Password != "s3cret-pass" {
+		t.Fatalf("configured password was not carried into the payload: %#v", withPassword.Password)
+	}
+
+	withoutPassword := userPayload(UserResourceModel{UserID: types.StringValue("alice@pbs")})
+	encoded, err := json.Marshal(withoutPassword)
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %s", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatalf("json.Unmarshal payload returned error: %s", err)
+	}
+	if _, ok := fields["password"]; ok {
+		t.Fatalf("payload carried a password that was never configured: %s", encoded)
+	}
+}
+
+func TestUserPasswordChangedIgnoresDroppedAndUnchangedPasswords(t *testing.T) {
+	for name, tc := range map[string]struct {
+		plan  types.String
+		state types.String
+		want  bool
+	}{
+		"dropped from configuration":  {plan: types.StringNull(), state: types.StringValue("old"), want: false},
+		"unchanged":                   {plan: types.StringValue("same"), state: types.StringValue("same"), want: false},
+		"changed":                     {plan: types.StringValue("new"), state: types.StringValue("old"), want: true},
+		"set after import":            {plan: types.StringValue("new"), state: types.StringNull(), want: true},
+		"unknown plan value":          {plan: types.StringUnknown(), state: types.StringValue("old"), want: false},
+		"never configured either way": {plan: types.StringNull(), state: types.StringNull(), want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := userPasswordChanged(UserResourceModel{Password: tc.plan}, UserResourceModel{Password: tc.state})
+			if got != tc.want {
+				t.Fatalf("userPasswordChanged = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestACLPayloadUsesWireTypedSubjectAndRecoveryID(t *testing.T) {
 	data := ACLResourceModel{
 		Path:     types.StringValue("/"),

@@ -24,11 +24,12 @@ func TestAccAccessResources(t *testing.T) {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: testAccAccessResourcesConfig(userID, tokenName),
+				Config: testAccAccessResourcesConfig(userID, tokenName, suffix),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("proxmox_backup_server_user.test", "user_id", userID),
 					resource.TestCheckResourceAttr("proxmox_backup_server_user.test", "enable", "true"),
 					resource.TestCheckResourceAttr("proxmox_backup_server_user.test", "comment", "Terraform acceptance test user"),
+					resource.TestCheckResourceAttr("proxmox_backup_server_user.test", "password", "tfacc-password-"+suffix),
 					resource.TestCheckResourceAttr("proxmox_backup_server_user_token.test", "id", tokenID),
 					resource.TestCheckResourceAttr("proxmox_backup_server_user_token.test", "user_id", userID),
 					resource.TestCheckResourceAttr("proxmox_backup_server_user_token.test", "token_name", tokenName),
@@ -61,6 +62,8 @@ func TestAccAccessResources(t *testing.T) {
 				ImportStateId:                        userID,
 				ImportStateVerify:                    true,
 				ImportStateVerifyIdentifierAttribute: "user_id",
+				// The API never returns the password.
+				ImportStateVerifyIgnore: []string{"password"},
 			},
 			{
 				ResourceName:            "proxmox_backup_server_user_token.test",
@@ -85,12 +88,13 @@ func TestAccAccessResources(t *testing.T) {
 	})
 }
 
-func testAccAccessResourcesConfig(userID, tokenName string) string {
+func testAccAccessResourcesConfig(userID, tokenName, suffix string) string {
 	return testAccProviderConfig() + fmt.Sprintf(`
 resource "proxmox_backup_server_user" "test" {
-  user_id = %[1]q
-  enable  = true
-  comment = "Terraform acceptance test user"
+  user_id  = %[1]q
+  enable   = true
+  comment  = "Terraform acceptance test user"
+  password = "tfacc-password-%[3]s"
 }
 
 resource "proxmox_backup_server_user_token" "test" {
@@ -132,5 +136,5 @@ data "proxmox_backup_server_acl" "token" {
   user_id = proxmox_backup_server_acl.token.user_id
   role_id = proxmox_backup_server_acl.token.role_id
 }
-`, userID, tokenName)
+`, userID, tokenName, suffix)
 }
